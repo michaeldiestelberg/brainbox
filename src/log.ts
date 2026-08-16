@@ -5,16 +5,21 @@ import { createHash } from 'node:crypto';
 const SENSITIVE_KEY = /(authorization|api[-_]?key|password|secret|credential)/i;
 const SECRET_TOKEN_KEY = /token$/i;
 const BINARY_KEY = /^(base64|data)$/i;
+const ENCRYPTED_REASONING_KEY = /encrypt|thoughtSignature|redacted_reasoning/i;
+const ENCRYPTED_REASONING_PLACEHOLDER = '[OMITTED encrypted reasoning]';
 
 export class RunLogger {
   readonly directory: string;
   readonly eventsFile: string;
+  readonly transcriptFile: string;
   private queue: Promise<void> = Promise.resolve();
+  private transcriptQueue: Promise<void> = Promise.resolve();
   private writeError: unknown;
 
   private constructor(directory: string) {
     this.directory = directory;
     this.eventsFile = path.join(directory, 'events.jsonl');
+    this.transcriptFile = path.join(directory, 'transcript.txt');
   }
 
   static async create(logsDir: string, runId: string): Promise<RunLogger> {
@@ -22,16 +27,24 @@ export class RunLogger {
     await mkdir(directory, { recursive: false });
     const logger = new RunLogger(directory);
     await writeFile(logger.eventsFile, '', { flag: 'wx' });
+    await writeFile(logger.transcriptFile, '', { flag: 'wx' });
     return logger;
   }
 
   event(type: string, data: Record<string, unknown> = {}): Promise<void> {
     const safeData = sanitize(data) as Record<string, unknown>;
-    const line = `${JSON.stringify({ timestamp: new Date().toISOString(), type, ...safeData })}\n`;
+    const record = `${JSON.stringify({ timestamp: new Date().toISOString(), type, ...safeData }, null, 2)}\n\n`;
     this.queue = this.queue
-      .then(() => appendFile(this.eventsFile, line))
+      .then(() => appendFile(this.eventsFile, record))
       .catch(error => { this.rememberError(error); });
     return this.queue;
+  }
+
+  /** Append human-readable progress text to transcript.txt (same shape as the live terminal). */
+  writeTranscript(text: string): void {
+    this.transcriptQueue = this.transcriptQueue
+      .then(() => appendFile(this.transcriptFile, text))
+      .catch(error => { this.rememberError(error); });
   }
 
   async writeJson(filename: string, value: unknown): Promise<string> {
@@ -47,7 +60,7 @@ export class RunLogger {
   }
 
   async flush(): Promise<void> {
-    await this.queue;
+    await Promise.all([this.queue, this.transcriptQueue]);
   }
 
   get error(): unknown {
@@ -60,6 +73,7 @@ export class RunLogger {
 }
 
 export function sanitize(value: unknown, key = '', seen = new WeakSet<object>()): unknown {
+  if (ENCRYPTED_REASONING_KEY.test(key)) return ENCRYPTED_REASONING_PLACEHOLDER;
   if (SENSITIVE_KEY.test(key) || SECRET_TOKEN_KEY.test(key)) return '[REDACTED]';
   if (value instanceof Error) {
     if (seen.has(value)) return '[Circular]';

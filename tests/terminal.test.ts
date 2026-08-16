@@ -62,3 +62,35 @@ test('terminal hides file contents and shows useful failures', () => {
   assert.doesNotMatch(output, /private large content/);
   assert.match(output, /✗ run_command: command not found/);
 });
+
+test('transcript destination keeps full reasoning and tool-call text', () => {
+  let preview = '';
+  let transcript = '';
+  const longReasoning = `First paragraph.\n\n${'Detailed thought. '.repeat(40).trim()}`;
+  const longCommand = `python3 <<'PY'\nprint(${'x'.repeat(200)})\nPY`;
+
+  const terminal = new TerminalReporter([
+    { write: text => { preview += text; }, previewLimit: 160 },
+    { write: text => { transcript += text; } },
+  ]);
+
+  terminal.event('agent.reasoning', { text: longReasoning });
+  terminal.event('agent.tool-call', {
+    part: {
+      type: 'tool-call',
+      toolName: 'run_command',
+      input: { command: longCommand },
+    },
+  });
+
+  assert.match(preview, /· Thinking: First paragraph\./);
+  assert.match(preview, /…/);
+  assert.ok([...preview.matchAll(/\n/g)].length <= 2);
+  assert.ok(!preview.includes('x'.repeat(200)));
+
+  assert.match(transcript, /· Thinking:\nFirst paragraph\./);
+  assert.match(transcript, /Detailed thought\./);
+  assert.doesNotMatch(transcript, /…/);
+  assert.match(transcript, /→ run_command:\npython3 <<'PY'/);
+  assert.match(transcript, new RegExp(`print\\(${'x'.repeat(200)}\\)`));
+});

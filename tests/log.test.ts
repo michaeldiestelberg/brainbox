@@ -18,7 +18,34 @@ test('a failed event write does not poison the logging queue', async () => {
   await logger.event('recovered', { ok: true });
   await logger.flush();
 
-  assert.match(await readFile(logger.eventsFile, 'utf8'), /"type":"recovered"/);
+  assert.match(await readFile(logger.eventsFile, 'utf8'), /"type": "recovered"/);
+});
+
+test('events are pretty-printed and blank-line separated', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'bbx-log-'));
+  const logger = await RunLogger.create(root, 'pretty');
+  await logger.event('alpha', { n: 1 });
+  await logger.event('beta', { n: 2 });
+  await logger.flush();
+
+  const text = await readFile(logger.eventsFile, 'utf8');
+  assert.match(text, /\{\n  "timestamp": /);
+  assert.match(text, /"type": "alpha"/);
+  assert.match(text, /\}\n\n\{\n  "timestamp": /);
+  assert.ok(text.endsWith('}\n\n'));
+});
+
+test('transcript.txt receives human-readable progress text', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'bbx-log-'));
+  const logger = await RunLogger.create(root, 'transcript');
+  logger.writeTranscript('Run demo\n');
+  logger.writeTranscript('· Thinking: full text here\n');
+  await logger.flush();
+
+  assert.equal(
+    await readFile(logger.transcriptFile, 'utf8'),
+    'Run demo\n· Thinking: full text here\n',
+  );
 });
 
 test('log sanitization redacts secrets and summarizes binary data', () => {
@@ -40,6 +67,32 @@ test('log sanitization redacts secrets and summarizes binary data', () => {
   assert.deepEqual(value.usage, { inputTokens: 12, outputTokens: 7, totalTokens: 19 });
   assert.match(JSON.stringify(value.buffer), /sha256/);
   assert.match(String(value.base64), /OMITTED/);
+});
+
+test('log sanitization replaces encrypted reasoning with a placeholder', () => {
+  const value = sanitize({
+    text: 'Visible reasoning summary',
+    providerMetadata: {
+      xai: { reasoningEncryptedContent: '1bE/jL5RGZl4/opaque' },
+      googleVertex: { thoughtSignature: 'AY89a19bETOc' },
+      vertex: { thoughtSignature: 'AY89a19bETOc' },
+    },
+    providerOptions: {
+      xai: { reasoningEncryptedContent: 'blob' },
+    },
+    redacted_reasoning: 'hidden',
+  }) as Record<string, unknown>;
+
+  assert.equal(value.text, 'Visible reasoning summary');
+  assert.equal(value.redacted_reasoning, '[OMITTED encrypted reasoning]');
+  assert.deepEqual(value.providerMetadata, {
+    xai: { reasoningEncryptedContent: '[OMITTED encrypted reasoning]' },
+    googleVertex: { thoughtSignature: '[OMITTED encrypted reasoning]' },
+    vertex: { thoughtSignature: '[OMITTED encrypted reasoning]' },
+  });
+  assert.deepEqual(value.providerOptions, {
+    xai: { reasoningEncryptedContent: '[OMITTED encrypted reasoning]' },
+  });
 });
 
 test('log sanitization preserves useful service error details', () => {

@@ -1,8 +1,12 @@
+<p align="center">
+  <img src="assets/brainbox.png" alt="brainbox — Einstein peeking out of a box" width="480" />
+</p>
+
 # brainbox (`bbx`)
 
-`bbx` is a CLI that uses [Vercel AI Gateway](https://vercel.com/docs/ai-gateway) and [Vercel Sandbox](https://vercel.com/docs/sandbox) together. You give it a text-file task and a model ID. It calls that model through the gateway, starts an AI agent in a disposable sandbox, downloads the files the agent declared, writes a full observable log, then permanently deletes the sandbox.
+`bbx` is a CLI that uses [OpenRouter](https://openrouter.ai/) and [Vercel Sandbox](https://vercel.com/docs/sandbox) together. You give it a text-file task and a model ID. It calls that model through OpenRouter, starts an AI agent in a disposable sandbox, downloads the files the agent declared, writes a full observable log, then permanently deletes the sandbox.
 
-Use it to satisfy curiosity about new models. When one shows up on the gateway, give it a task, let it operate in a sandbox, and watch what it does. I publish my experiments with new AI models using bbx on [productized.tech/model](https://productized.tech/models).
+Use it to satisfy curiosity about new models. When one shows up on OpenRouter, give it a task, let it operate in a sandbox, and watch what it does. I publish my experiments with new AI models using bbx on [productized.tech/model](https://productized.tech/models).
 
 Sandbox has a generous [Hobby free tier](https://vercel.com/docs/sandbox/pricing). Within those quotas, the sandbox itself does not add extra cost.
 
@@ -18,14 +22,15 @@ Sandbox has a generous [Hobby free tier](https://vercel.com/docs/sandbox/pricing
 ### What you need
 
 - Node.js 24 or newer
-- A [Vercel account](https://vercel.com/signup) and a project. The project does not need any code deployed; it only has to exist so Vercel can issue credentials for AI Gateway and Sandbox.
+- An [OpenRouter](https://openrouter.ai/) API key
+- A [Vercel account](https://vercel.com/signup) and a project. The project does not need any code deployed; it only has to exist so Vercel can issue credentials for Sandbox.
 - The [Vercel CLI](https://vercel.com/docs/cli)
 
 
 
 ### One-time setup
 
-Install `bbx`, link a Vercel project, and pull a local token:
+Install `bbx`, add an OpenRouter key, link a Vercel project, and pull a local sandbox token:
 
 ```bash
 npm install
@@ -38,7 +43,7 @@ vercel link
 vercel env pull .env.local --yes
 ```
 
-`vercel env pull` writes `.env.local` next to your config file. That file holds `VERCEL_OIDC_TOKEN`, which authenticates both AI Gateway and Sandbox. The token stays on your machine and is never copied into the sandbox. It expires after about 12 hours; run `vercel env pull .env.local --yes` again if authentication starts failing.
+Put `OPENROUTER_API_KEY` in `.env.local` next to your config file (see `.env.example`). `vercel env pull` writes `VERCEL_OIDC_TOKEN`, which authenticates Sandbox. Both stay on your machine and are never copied into the sandbox. The OIDC token expires after about 12 hours; run `vercel env pull .env.local --yes` again if sandbox authentication starts failing.
 
 Then check that everything is in place:
 
@@ -46,7 +51,7 @@ Then check that everything is in place:
 bbx doctor
 ```
 
-This repo's committed `bbx.config.json` currently looks for the system prompt - and writes artifacts and logs - in a sibling `../brainbox-output/` directory. Copy `SYSTEM_PROMPT.md` there, or change those paths in the config to point inside the repo. `bbx doctor` will tell you if the prompt file is missing.
+This repo's committed `bbx.config.json` uses the in-repo `SYSTEM_PROMPT.md` and writes artifacts and logs under `./artifacts` and `./logs`. `bbx doctor` will tell you if the prompt file is missing.
 
 ### Write a task
 
@@ -61,7 +66,7 @@ This repo already includes a few sample tasks (`essay`, `landingpage`, `powerpoi
 
 ### Pick a model
 
-`bbx models` reads the public AI Gateway catalog. It does not need credentials.
+`bbx models` reads the public OpenRouter catalog. It does not need credentials.
 
 ```bash
 bbx models --tool-use
@@ -74,7 +79,7 @@ bbx models claude --tool-use --reasoning
 ### Run it
 
 ```bash
-bbx run essay --model xai/grok-4.6
+bbx run essay --model x-ai/grok-4.6
 ```
 
 `--model` is required. Task names are relative to the tasks directory; these all work:
@@ -99,16 +104,19 @@ Useful options when you need them:
 
 ### What you get
 
-Each run gets an ID like `2026-08-09-xai-grok-4.6-ea756923` (UTC date, a filesystem-safe model ID, and a short unique suffix). When the agent finishes, `bbx` downloads the files it declared and deletes the sandbox.
+Each run gets an ID like `2026-08-16-x-ai-grok-4.6-ea756923` (UTC date, a filesystem-safe model ID, and a short unique suffix). When the agent finishes, `bbx` downloads the files it declared and deletes the sandbox.
 
 ```text
 artifacts/<run-id>/                   The deliverables
 logs/<run-id>/events.jsonl           Append-only event stream for the whole run
+logs/<run-id>/transcript.txt         Human-readable progress (same shape as the live terminal, full text)
 logs/<run-id>/result.json            Final status and summary
 logs/<run-id>/artifact-manifest.json Sizes and SHA-256 hashes
 ```
 
-`events.jsonl` stores command output in full. Very large output may be shortened before it is returned to the model, to protect the context window. The log records reasoning text and summaries the selected provider exposes; providers do not expose private hidden chain-of-thought.
+`events.jsonl` is an append-only stream of pretty-printed JSON records separated by blank lines. Command output is stored in full (very large output may still be shortened before it is returned to the model, to protect the context window). The log keeps plaintext reasoning summaries the provider exposes and replaces encrypted reasoning traces with a placeholder; providers do not expose private hidden chain-of-thought.
+
+`transcript.txt` mirrors the live terminal progress (run header, thinking, tool calls/results, phases). Reasoning and tool-call details are written in full instead of the short previews shown on screen.
 
 If a run fails or hits a limit, `bbx` still tries to salvage whatever is already in the sandbox artifact directory into `artifacts/<run-id>.partial`.
 
@@ -175,7 +183,7 @@ The agent gets a short list of tools. Together they are enough to operate the co
 - `read_file` - Read a sandbox file in chunks.
 - `write_files` - Write one or more files.
 - `list_files` - Inspect a directory tree (type and size).
-- `view_image` - Look at an image in the sandbox when the selected model supports vision.
+- `view_image` - Look at an image in the sandbox when the selected model supports vision. Images are re-encoded as JPEG under a ~100KB budget (and downscaled if needed). Only the latest screenshot stays in the model context; earlier ones become short text stubs.
 - `finish_task` - End the run with a summary and the artifact files or directories to download.
 
 The sandbox has network access, so the agent can install packages and fetch whatever it needs to do the job.

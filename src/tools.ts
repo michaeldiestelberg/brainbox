@@ -3,8 +3,9 @@ import path from 'node:path';
 import type { Command, Sandbox } from '@vercel/sandbox';
 import { tool } from 'ai';
 import { z } from 'zod';
-import type { GatewayModel } from './models.js';
+import type { CatalogModel } from './models.js';
 import type { RunLogger } from './log.js';
+import { prepareImageForModel } from './image.js';
 
 export const SANDBOX_ROOT = '/vercel/sandbox';
 export const SANDBOX_ARTIFACTS = `${SANDBOX_ROOT}/artifacts`;
@@ -34,7 +35,7 @@ type ToolContext = {
   sandbox: Sandbox;
   logger: RunLogger;
   signal: AbortSignal;
-  model: GatewayModel;
+  model: CatalogModel;
   finish: FinishState;
 };
 
@@ -359,23 +360,37 @@ export function createSandboxTools(context: ToolContext) {
 
     view_image: tool({
       description: hasVision
-        ? 'View an image from the sandbox using the model image modality.'
+        ? 'View an image from the sandbox using the model image modality. Images are compressed to a small JPEG before the model sees them; only the latest screenshot is kept in full in later steps.'
         : 'This model does not support image input; calling this tool returns an explanatory error.',
       inputSchema: z.object({ path: z.string().min(1) }),
       execute: async ({ path: requestedPath }) => {
         if (!hasVision) return { error: `Model ${context.model.id} does not advertise vision support.` };
         const resolved = sandboxPath(requestedPath);
-        const mediaType = mediaTypeFor(resolved);
-        if (!mediaType) return { error: `Unsupported image format: ${resolved}` };
+        const sourceMediaType = mediaTypeFor(resolved);
+        if (!sourceMediaType) return { error: `Unsupported image format: ${resolved}` };
+        if (sourceMediaType === 'image/svg+xml') {
+          return { error: `SVG images are not supported for view_image: ${resolved}` };
+        }
         const contents = await context.sandbox.readFileToBuffer({ path: resolved }, { signal: context.signal });
         if (contents === null) return { error: `Image not found: ${resolved}` };
         if (contents.byteLength > MAX_IMAGE_BYTES) return { error: `Image exceeds ${MAX_IMAGE_BYTES} bytes.` };
+
+        let prepared;
+        try {
+          prepared = await prepareImageForModel(contents);
+        } catch (error) {
+          return { error: `Unable to prepare image for the model: ${error instanceof Error ? error.message : String(error)}` };
+        }
+
         const result = {
           path: resolved,
-          mediaType,
-          bytes: contents.byteLength,
-          sha256: createHash('sha256').update(contents).digest('hex'),
-          base64: contents.toString('base64'),
+          mediaType: prepared.mediaType,
+          width: prepared.width,
+          height: prepared.height,
+          originalBytes: prepared.originalBytes,
+          bytes: prepared.bytes,
+          sha256: createHash('sha256').update(prepared.buffer).digest('hex'),
+          base64: prepared.buffer.toString('base64'),
         };
         await context.logger.event('sandbox.image.viewed', result);
         return result;
@@ -385,7 +400,10 @@ export function createSandboxTools(context: ToolContext) {
         return {
           type: 'content',
           value: [
-            { type: 'text', text: `Image ${output.path} (${output.bytes} bytes)` },
+            {
+              type: 'text',
+              text: `Image ${output.path} (${output.originalBytes} → ${output.bytes} bytes, ${output.width}×${output.height} JPEG)`,
+            },
             { type: 'file', mediaType: output.mediaType, data: { type: 'data', data: output.base64 } },
           ],
         };

@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { OPENROUTER_API_BASE } from './openrouter.js';
 
 const reasoningOptionSchema = z
   .object({
@@ -9,7 +10,7 @@ const reasoningOptionSchema = z
   })
   .passthrough();
 
-const gatewayModelSchema = z
+const catalogModelSchema = z
   .object({
     id: z.string(),
     name: z.string(),
@@ -26,9 +27,42 @@ const gatewayModelSchema = z
   })
   .passthrough();
 
-const catalogSchema = z.object({ data: z.array(gatewayModelSchema) });
+const openRouterReasoningSchema = z
+  .object({
+    mandatory: z.boolean().optional(),
+    default_enabled: z.boolean().optional(),
+    supported_efforts: z.array(z.string()).optional(),
+    default_effort: z.string().optional(),
+  })
+  .passthrough();
 
-export type GatewayModel = z.infer<typeof gatewayModelSchema>;
+const openRouterModelSchema = z
+  .object({
+    id: z.string(),
+    name: z.string(),
+    architecture: z
+      .object({
+        modality: z.string().nullish(),
+        input_modalities: z.array(z.string()).optional(),
+        output_modalities: z.array(z.string()).optional(),
+      })
+      .passthrough()
+      .nullish(),
+    top_provider: z
+      .object({
+        max_completion_tokens: z.number().nullish(),
+      })
+      .passthrough()
+      .nullish(),
+    supported_parameters: z.array(z.string()).nullish(),
+    reasoning: openRouterReasoningSchema.nullish(),
+  })
+  .passthrough();
+
+const openRouterCatalogSchema = z.object({ data: z.array(openRouterModelSchema) }).passthrough();
+
+export type CatalogModel = z.infer<typeof catalogModelSchema>;
+export type OpenRouterModel = z.infer<typeof openRouterModelSchema>;
 export const REASONING_EFFORTS = [
   'provider-default',
   'none',
@@ -40,21 +74,83 @@ export const REASONING_EFFORTS = [
 ] as const;
 export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 
-export async function fetchModels(signal?: AbortSignal): Promise<GatewayModel[]> {
+/** Prefer agent-relevant tags first so the capabilities column stays scannable. */
+const CAPABILITY_TAG_ORDER = [
+  'tool-use',
+  'reasoning',
+  'vision',
+  'file-input',
+  'web-search',
+  'structured-output',
+] as const;
+
+function catalogType(outputModalities: readonly string[]): string {
+  if (outputModalities.includes('text')) return 'language';
+  return outputModalities[0] ?? 'other';
+}
+
+function catalogTags(
+  inputModalities: readonly string[],
+  supportedParameters: readonly string[],
+  reasoning: OpenRouterModel['reasoning'],
+): string[] {
+  const params = new Set(supportedParameters.map(parameter => parameter.toLowerCase()));
+  const inputs = new Set(inputModalities.map(modality => modality.toLowerCase()));
+  const tags: string[] = [];
+  if (params.has('tools')) tags.push('tool-use');
+  if (
+    params.has('reasoning')
+    || params.has('reasoning_effort')
+    || params.has('include_reasoning')
+    || reasoning
+  ) {
+    tags.push('reasoning');
+  }
+  if (inputs.has('image')) tags.push('vision');
+  if (inputs.has('file')) tags.push('file-input');
+  if (params.has('web_search_options')) tags.push('web-search');
+  if (params.has('structured_outputs')) tags.push('structured-output');
+  const rank = new Map<string, number>(CAPABILITY_TAG_ORDER.map((tag, index) => [tag, index]));
+  return tags.sort((a, b) => (rank.get(a) ?? CAPABILITY_TAG_ORDER.length) - (rank.get(b) ?? CAPABILITY_TAG_ORDER.length)
+    || a.localeCompare(b));
+}
+
+function catalogReasoningOptions(
+  reasoning: OpenRouterModel['reasoning'],
+): CatalogModel['reasoning_options'] {
+  if (!reasoning?.supported_efforts?.length) return null;
+  return [{ type: 'effort', values: reasoning.supported_efforts }];
+}
+
+export function toCatalogModel(raw: OpenRouterModel): CatalogModel {
+  const input = raw.architecture?.input_modalities ?? [];
+  const output = raw.architecture?.output_modalities ?? [];
+  return catalogModelSchema.parse({
+    id: raw.id,
+    name: raw.name,
+    type: catalogType(output),
+    max_tokens: raw.top_provider?.max_completion_tokens ?? null,
+    tags: catalogTags(input, raw.supported_parameters ?? [], raw.reasoning),
+    modalities: { input, output },
+    reasoning_options: catalogReasoningOptions(raw.reasoning),
+  });
+}
+
+export async function fetchModels(signal?: AbortSignal): Promise<CatalogModel[]> {
   const response = await fetch(
-    'https://ai-gateway.vercel.sh/v1/models',
+    `${OPENROUTER_API_BASE}/models?output_modalities=all`,
     signal ? { signal } : undefined,
   );
   if (!response.ok) {
-    throw new Error(`AI Gateway model catalog returned HTTP ${response.status}.`);
+    throw new Error(`OpenRouter model catalog returned HTTP ${response.status}.`);
   }
-  return catalogSchema.parse(await response.json()).data;
+  return openRouterCatalogSchema.parse(await response.json()).data.map(toCatalogModel);
 }
 
-export function findRunnableModel(models: GatewayModel[], modelId: string): GatewayModel {
+export function findRunnableModel(models: CatalogModel[], modelId: string): CatalogModel {
   const model = models.find(candidate => candidate.id === modelId);
   if (!model) {
-    throw new Error(`Unknown AI Gateway model: ${modelId}. Run "bbx models" to list current IDs.`);
+    throw new Error(`Unknown OpenRouter model: ${modelId}. Run "bbx models" to list current IDs.`);
   }
   const tags = model.tags ?? [];
   if (model.type !== 'language' || !tags.includes('tool-use')) {
@@ -65,7 +161,7 @@ export function findRunnableModel(models: GatewayModel[], modelId: string): Gate
   return model;
 }
 
-export function getMaxOutputTokens(model: GatewayModel): number | undefined {
+export function getMaxOutputTokens(model: CatalogModel): number | undefined {
   return model.max_tokens === 0 || model.max_tokens == null ? undefined : model.max_tokens;
 }
 
@@ -141,7 +237,7 @@ export function parseReasoningEffort(value?: string): ReasoningEffort | undefine
 }
 
 /** Effort values advertised by the catalog, if the model supports configurable effort. */
-export function getReasoningEffortValues(model: GatewayModel): string[] | undefined {
+export function getReasoningEffortValues(model: CatalogModel): string[] | undefined {
   const effortOption = model.reasoning_options?.find(option => option.type === 'effort');
   if (!effortOption?.values?.length) return undefined;
   return effortOption.values;
@@ -151,7 +247,7 @@ export function getReasoningEffortValues(model: GatewayModel): string[] | undefi
  * Human-readable reasoning controls for a model.
  * Effort levels (what `--reasoning-effort` accepts) come first; then toggle/budget.
  */
-export function formatReasoningSummary(model: GatewayModel): string {
+export function formatReasoningSummary(model: CatalogModel): string {
   const options = model.reasoning_options ?? [];
   if (options.length === 0) {
     return (model.tags ?? []).includes('reasoning') ? 'fixed' : '—';
@@ -180,16 +276,6 @@ export function formatReasoningSummary(model: GatewayModel): string {
   return parts.length > 0 ? parts.join(' · ') : '—';
 }
 
-/** Prefer agent-relevant tags first so the capabilities column stays scannable. */
-const CAPABILITY_TAG_ORDER = [
-  'tool-use',
-  'reasoning',
-  'vision',
-  'file-input',
-  'web-search',
-  'structured-output',
-] as const;
-
 export function formatCapabilityTags(tags: readonly string[] | null | undefined): string {
   if (!tags?.length) return '—';
   const rank = new Map<string, number>(CAPABILITY_TAG_ORDER.map((tag, index) => [tag, index]));
@@ -207,7 +293,7 @@ export type ModelListFilters = {
   query?: string;
 };
 
-export function filterModels(models: GatewayModel[], filters: ModelListFilters = {}): GatewayModel[] {
+export function filterModels(models: CatalogModel[], filters: ModelListFilters = {}): CatalogModel[] {
   const query = filters.query?.trim().toLowerCase();
   return models.filter(model => {
     const tags = model.tags ?? [];
@@ -226,7 +312,7 @@ function pad(value: string, width: number): string {
 }
 
 /** Aligned multi-column listing of models, including reasoning effort when available. */
-export function formatModelsTable(models: GatewayModel[]): string {
+export function formatModelsTable(models: CatalogModel[]): string {
   const headers = {
     id: 'ID',
     type: 'TYPE',

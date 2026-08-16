@@ -24,8 +24,10 @@
     "node": ">=24"
   },
   "dependencies": {
+    "@openrouter/ai-sdk-provider": "^3.0.0",
     "@vercel/sandbox": "^3.0.0",
     "ai": "^7.0.58",
+    "sharp": "^0.35.3",
     "zod": "^4.4.3"
   },
   "devDependencies": {

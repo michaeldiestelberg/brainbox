@@ -9,6 +9,7 @@ import { ArtifactDownloadError, downloadArtifacts, type ArtifactManifest } from 
 import { RunLogger } from './log.js';
 import { StreamEventLogger } from './stream-log.js';
 import { TerminalReporter } from './terminal.js';
+import { evictStaleViewImages } from './messages.js';
 import {
   fetchModels,
   findRunnableModel,
@@ -17,7 +18,13 @@ import {
   reasoningLevelFromWarnings,
   type ReasoningEffort,
 } from './models.js';
+import { createBbxOpenRouter } from './openrouter.js';
+import {
+  errorFromProviderStreamPart,
+  withProviderRetries,
+} from './provider-retry.js';
 import { createSandboxTools, initializeSandboxFilesystem, type FinishState } from './tools.js';
+import { usageCost } from './usage.js';
 
 export type RunStatus =
   | 'completed'
@@ -40,6 +47,8 @@ export type RunResult = {
   finishedAt: string;
   durationMs: number;
   turns: number;
+  /** Sum of OpenRouter `usage.raw.cost` across steps. Missing step costs count as 0. */
+  cost: number;
   summary?: string;
   artifacts?: ArtifactManifest;
   error?: string;
@@ -108,6 +117,10 @@ async function consumeAgentStream(
   });
   try {
     for await (const part of result.stream) {
+      const streamFailure = errorFromProviderStreamPart(part);
+      if (streamFailure !== undefined) {
+        throw streamFailure instanceof Error ? streamFailure : new Error(errorMessage(streamFailure));
+      }
       await streamLogger.record(part);
       if (part && typeof part === 'object' && 'warnings' in part) {
         await onWarnings?.((part as { warnings?: unknown }).warnings);
@@ -131,7 +144,10 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
   await mkdir(options.config.logsDir, { recursive: true });
   await mkdir(options.config.artifactsDir, { recursive: true });
   const logger = await RunLogger.create(options.config.logsDir, runId);
-  const terminal = new TerminalReporter();
+  const terminal = new TerminalReporter([
+    { write: text => process.stdout.write(text), previewLimit: 160 },
+    { write: text => logger.writeTranscript(text) },
+  ]);
   const durationMs = options.config.limits.durationMinutes * 60_000;
   const deadline = Date.now() + durationMs;
   const processAbort = new AbortController();
@@ -150,6 +166,7 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
   const finish: FinishState = { accepted: false, artifacts: [] };
   let sandbox: Sandbox | undefined;
   let turns = 0;
+  let cost = 0;
   let status: RunStatus = 'agent_error';
   let runError: string | undefined;
   let cleanupError: string | undefined;
@@ -206,6 +223,7 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
   };
 
   try {
+    const openrouter = createBbxOpenRouter();
     const models = await fetchModels(AbortSignal.any([workSignal, AbortSignal.timeout(15_000)]));
     const model = findRunnableModel(models, options.modelId);
     const maxOutputTokens = getMaxOutputTokens(model);
@@ -235,52 +253,85 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
 
     while (!finish.accepted && turns < options.config.limits.turns && !workSignal.aborted) {
       const turnBudget = options.config.limits.turns - turns;
-      const agent = new ToolLoopAgent({
-        model: options.modelId,
-        instructions: systemPrompt,
-        tools,
-        reasoning: requestedReasoning,
-        ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
-        stopWhen: [({ steps }) => finish.accepted && steps.length > 0, isStepCount(turnBudget)],
-        providerOptions: {
-          gateway: { user: runId, tags: ['app:bbx', `run:${runId.slice(0, 60)}`] },
-        },
-      });
+      const invocationMessages = [...messages];
+      const { steps, responseMessages, usage, warnings } = await withProviderRetries(async () => {
+        const agent = new ToolLoopAgent({
+          model: openrouter(options.modelId, { usage: { include: true } }),
+          instructions: systemPrompt,
+          tools,
+          reasoning: requestedReasoning,
+          ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+          stopWhen: [({ steps }) => finish.accepted && steps.length > 0, isStepCount(turnBudget)],
+          prepareStep: ({ messages: stepMessages }) => ({
+            messages: evictStaleViewImages(stepMessages),
+          }),
+          providerOptions: {
+            openrouter: { user: runId },
+          },
+        });
 
-      const result = await agent.stream({
-        messages,
-        abortSignal: workSignal,
-        timeout: { totalMs: remainingMs(deadline) },
-        onStepStart: event => logger.event('agent.step.start', { stepNumber: turns + event.stepNumber, messages: event.messages }),
-        onStepEnd: async event => {
-          await applyReasoningWarnings(event.warnings, 'agent.step.end');
-          await logger.event('agent.step.end', {
+        const result = await agent.stream({
+          messages: invocationMessages,
+          abortSignal: workSignal,
+          timeout: { totalMs: remainingMs(deadline) },
+          onStepStart: event => logger.event('agent.step.start', {
             stepNumber: turns + event.stepNumber,
-            finishReason: event.finishReason,
-            usage: event.usage,
-            performance: event.performance,
-            warnings: event.warnings,
-            reasoningEffort: usedReasoningEffort,
+            messageCount: event.messages.length,
+          }),
+          onStepEnd: async event => {
+            cost += usageCost(event.usage);
+            await applyReasoningWarnings(event.warnings, 'agent.step.end');
+            await logger.event('agent.step.end', {
+              stepNumber: turns + event.stepNumber,
+              finishReason: event.finishReason,
+              usage: event.usage,
+              performance: event.performance,
+              warnings: event.warnings,
+              reasoningEffort: usedReasoningEffort,
+            });
+          },
+        });
+
+        await consumeAgentStream(result, logger, terminal, warnings => applyReasoningWarnings(warnings, 'agent.stream'));
+        const [nextSteps, nextResponseMessages, nextUsage, nextWarnings] = await Promise.all([
+          result.steps,
+          result.responseMessages,
+          result.usage,
+          result.warnings,
+        ]);
+        return {
+          steps: nextSteps,
+          responseMessages: nextResponseMessages,
+          usage: nextUsage,
+          warnings: nextWarnings,
+        };
+      }, {
+        signal: workSignal,
+        onRetry: async ({ attempt, maxAttempts, delayMs, error }) => {
+          await logger.event('agent.invocation.retry', {
+            attempt,
+            maxAttempts,
+            delayMs,
+            error,
           });
+          terminal.phase(
+            `Provider error, retrying in ${delayMs / 1000}s (${attempt}/${maxAttempts - 1})…`,
+          );
         },
       });
-
-      await consumeAgentStream(result, logger, terminal, warnings => applyReasoningWarnings(warnings, 'agent.stream'));
-      const [steps, responseMessages, usage, warnings] = await Promise.all([
-        result.steps,
-        result.responseMessages,
-        result.usage,
-        result.warnings,
-      ]);
       await applyReasoningWarnings(warnings, 'agent.invocation.end');
       turns += steps.length;
       messages.push(...responseMessages);
+      const compacted = evictStaleViewImages(messages);
+      messages.length = 0;
+      messages.push(...compacted);
       await logger.event('agent.invocation.end', {
         turns,
         usage,
         warnings,
         finished: finish.accepted,
         reasoningEffort: usedReasoningEffort,
+        cost,
       });
 
       if (!finish.accepted && turns < options.config.limits.turns && !workSignal.aborted) {
@@ -368,6 +419,7 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     finishedAt: finished.toISOString(),
     durationMs: finished.getTime() - started.getTime(),
     turns,
+    cost,
     ...(finish.summary === undefined ? {} : { summary: finish.summary }),
     ...(artifacts === undefined ? {} : { artifacts }),
     ...(runError === undefined ? {} : { error: runError }),

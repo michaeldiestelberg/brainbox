@@ -4,6 +4,7 @@ import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { errorMessage, loadConfig, loadProjectEnvironment, readSystemPrompt } from './config.js';
 import { fetchModels, filterModels, formatModelsTable, parseReasoningEffort } from './models.js';
+import { validateOpenRouterKey } from './openrouter.js';
 import { runTask } from './run.js';
 
 const HELP = `bbx — run AI agent tasks in disposable Vercel Sandboxes
@@ -15,7 +16,7 @@ Usage:
 
 Options:
   --config <path>             Config file (default: ./bbx.config.json)
-  --model <id>               Vercel AI Gateway model ID
+  --model <id>               OpenRouter model ID
   --reasoning-effort <level> provider-default, none, minimal, low, medium, high, xhigh
   --run-id <id>              Optional explicit run identifier override
   --tool-use                 List only models that support tool use
@@ -73,23 +74,30 @@ async function doctor(configPath?: string): Promise<boolean> {
   ]);
 
   const token = process.env.VERCEL_OIDC_TOKEN;
-  const apiKey = process.env.AI_GATEWAY_API_KEY;
+  const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   const expiry = token ? oidcExpiry(token) : undefined;
   const oidcValid = Boolean(token && (!expiry || expiry.getTime() > Date.now()));
-  const gatewayAuthValid = Boolean(apiKey || oidcValid);
   const explicitSandboxAuth = Boolean(
     process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID,
   );
   const sandboxAuthValid = oidcValid || explicitSandboxAuth;
-  checks.push([
-    'AI Gateway auth',
-    gatewayAuthValid,
-    apiKey
-      ? 'AI_GATEWAY_API_KEY is set'
-      : token
-        ? `VERCEL_OIDC_TOKEN${expiry ? ` expires ${expiry.toISOString()}` : ' is set'}`
-        : `not found${envFile ? ` in ${envFile}` : ''}`,
-  ]);
+  let openRouterAuthValid = Boolean(apiKey);
+  if (!apiKey) {
+    checks.push([
+      'OpenRouter auth',
+      false,
+      `OPENROUTER_API_KEY not found${envFile ? ` in ${envFile}` : ''}`,
+    ]);
+  } else {
+    try {
+      const detail = await validateOpenRouterKey(apiKey, AbortSignal.timeout(15_000));
+      openRouterAuthValid = true;
+      checks.push(['OpenRouter auth', true, detail]);
+    } catch (error) {
+      openRouterAuthValid = false;
+      checks.push(['OpenRouter auth', false, errorMessage(error)]);
+    }
+  }
   checks.push([
     'Sandbox auth',
     sandboxAuthValid,
@@ -102,13 +110,16 @@ async function doctor(configPath?: string): Promise<boolean> {
 
   try {
     const models = await fetchModels(AbortSignal.timeout(15_000));
-    checks.push(['AI Gateway', true, `${models.length} models available`]);
+    checks.push(['OpenRouter', true, `${models.length} models available`]);
   } catch (error) {
-    checks.push(['AI Gateway', false, errorMessage(error)]);
+    checks.push(['OpenRouter', false, errorMessage(error)]);
   }
 
   for (const [name, ok, detail] of checks) console.log(`${ok ? 'ok' : 'FAIL'}  ${name}: ${detail}`);
-  if (!gatewayAuthValid || !sandboxAuthValid) {
+  if (!openRouterAuthValid) {
+    console.log('\nSet OPENROUTER_API_KEY in .env.local next to your config file.');
+  }
+  if (!sandboxAuthValid) {
     console.log('\nRun: vercel login && vercel link && vercel env pull .env.local --yes');
   }
   return checks.every(([, ok]) => ok);

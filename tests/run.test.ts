@@ -3,7 +3,7 @@ import test from 'node:test';
 import type { Command, Sandbox } from '@vercel/sandbox';
 import { errorMessage } from '../src/config.js';
 import type { RunLogger } from '../src/log.js';
-import type { GatewayModel } from '../src/models.js';
+import type { CatalogModel } from '../src/models.js';
 import { createRunId, createSandboxName, validateRunId } from '../src/run.js';
 import {
   clipped,
@@ -110,7 +110,7 @@ test('foreground commands are not retained after their output is returned', asyn
     name: 'Model',
     type: 'language',
     tags: ['tool-use'],
-  } as GatewayModel;
+  } as CatalogModel;
   const tools = createSandboxTools({
     sandbox,
     logger,
