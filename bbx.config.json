@@ -1,0 +1,10 @@
+{
+  "tasksDir": "./tasks",
+  "artifactsDir": "./artifacts",
+  "logsDir": "./logs",
+  "systemPromptFile": "./SYSTEM_PROMPT.md",
+  "limits": {
+    "turns": 200,
+    "durationMinutes": 43
+  }
+}

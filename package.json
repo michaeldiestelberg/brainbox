@@ -1,0 +1,36 @@
+{
+  "name": "brainbox",
+  "version": "0.1.0",
+  "description": "Run AI agent tasks in disposable Vercel Sandboxes.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "bbx": "./dist/cli.js"
+  },
+  "files": [
+    "dist/*.js",
+    "dist/*.js.map",
+    "SYSTEM_PROMPT.md",
+    "bbx.config.json"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "postbuild": "node -e \"require('node:fs').chmodSync('dist/cli.js', 0o755)\"",
+    "dev": "tsx src/cli.ts",
+    "test": "tsx --test tests/**/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "@vercel/sandbox": "^3.0.0",
+    "ai": "^7.0.58",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "tsx": "^4.23.11",
+    "typescript": "^5.9.3"
+  }
+}

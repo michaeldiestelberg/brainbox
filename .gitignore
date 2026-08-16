@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env*
+!.env.example
+artifacts/*
+!artifacts/.gitkeep
+logs/*
+!logs/.gitkeep
+*.tsbuildinfo
+.vercel
+.DS_Store
+AGENTS.md
