@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="assets/brainbox.png" alt="brainbox — Einstein peeking out of a box" width="480" />
-</p>
+![brainbox — Einstein peeking out of a box](assets/brainbox.png)
 
 # brainbox (`bbx`)
 
