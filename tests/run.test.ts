@@ -158,3 +158,17 @@ test('service API details are included in user-facing errors', () => {
     'Status code 400 is not ok: parent directory is missing',
   );
 });
+
+test('plain provider error objects are serialized instead of [object Object]', () => {
+  assert.equal(
+    errorMessage({ code: 'server_error', message: 'Provider disconnected' }),
+    'server_error: Provider disconnected',
+  );
+  assert.equal(
+    errorMessage({ error: { code: 'timeout', message: 'The provider did not respond' } }),
+    'timeout: The provider did not respond',
+  );
+  const wrapped = new Error('[object Object]');
+  wrapped.cause = { code: 'server_error', message: 'Provider disconnected' };
+  assert.equal(errorMessage(wrapped), 'server_error: Provider disconnected');
+});

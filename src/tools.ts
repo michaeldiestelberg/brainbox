@@ -314,7 +314,8 @@ export function createSandboxTools(context: ToolContext) {
     }),
 
     write_files: tool({
-      description: 'Write one or more UTF-8 or base64-encoded files in the sandbox.',
+      description:
+        'Write one or more UTF-8 or base64-encoded files in the sandbox. For large documents, write in multiple calls so partial progress is saved if the provider stream drops.',
       inputSchema: z.object({
         files: z.array(z.object({
           path: z.string().min(1),

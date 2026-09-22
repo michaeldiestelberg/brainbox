@@ -1,4 +1,5 @@
 import { APICallError, EmptyResponseBodyError, RetryError } from 'ai';
+import { errorMessage } from './config.js';
 
 /** Initial attempt plus 3 retries of the same messages payload. */
 export const PROVIDER_MAX_ATTEMPTS = 4;
@@ -21,10 +22,10 @@ function statusCode(error: unknown): number | undefined {
 function errorText(error: unknown): string {
   if (error instanceof Error) {
     const code = 'code' in error ? String(error.code) : '';
-    const cause = error.cause instanceof Error ? error.cause.message : '';
+    const cause = error.cause !== undefined ? errorMessage(error.cause) : '';
     return `${error.name} ${error.message} ${code} ${cause}`;
   }
-  return String(error);
+  return errorMessage(error);
 }
 
 function isRetryableHttpStatus(status: number | undefined): boolean {
@@ -43,7 +44,7 @@ export function isRetryableProviderError(error: unknown): boolean {
   if (EmptyResponseBodyError.isInstance(error)) return true;
   if (isRetryableHttpStatus(statusCode(error))) return true;
   if (error instanceof Error && error.cause && isRetryableProviderError(error.cause)) return true;
-  return /(?:^|[^0-9])(408|409|429|500|502|503|504)(?:[^0-9]|$)|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|ENOTFOUND|EAI_AGAIN|EPIPE|UND_ERR|fetch failed|socket|network|timeout|timed out|bad gateway|gateway timeout|temporarily unavailable|stream aborted|connection (?:lost|reset|closed|aborted)/i
+  return /(?:^|[^0-9])(408|409|429|500|502|503|504)(?:[^0-9]|$)|ETIMEDOUT|ECONNRESET|ECONNREFUSED|ECONNABORTED|ENOTFOUND|EAI_AGAIN|EPIPE|UND_ERR|fetch failed|socket|network|timeout|timed out|bad gateway|gateway timeout|temporarily unavailable|stream aborted|connection (?:lost|reset|closed|aborted)|disconnect|server_error|provider stream|\[object Object\]/i
     .test(errorText(error));
 }
 
@@ -57,6 +58,14 @@ export function errorFromProviderStreamPart(part: {
     return new Error(part.reason ? `Provider stream aborted: ${part.reason}` : 'Provider stream aborted.');
   }
   return undefined;
+}
+
+export function toThrownError(error: unknown): Error {
+  if (error instanceof Error) return error;
+  const message = errorMessage(error);
+  const thrown = new Error(message && message !== '[object Object]' ? message : 'Provider stream error.');
+  thrown.cause = error;
+  return thrown;
 }
 
 export async function sleep(ms: number, signal: AbortSignal): Promise<void> {

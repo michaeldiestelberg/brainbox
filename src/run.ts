@@ -21,6 +21,8 @@ import {
 import { createBbxOpenRouter } from './openrouter.js';
 import {
   errorFromProviderStreamPart,
+  isRetryableProviderError,
+  toThrownError,
   withProviderRetries,
 } from './provider-retry.js';
 import { createSandboxTools, initializeSandboxFilesystem, type FinishState } from './tools.js';
@@ -119,7 +121,8 @@ async function consumeAgentStream(
     for await (const part of result.stream) {
       const streamFailure = errorFromProviderStreamPart(part);
       if (streamFailure !== undefined) {
-        throw streamFailure instanceof Error ? streamFailure : new Error(errorMessage(streamFailure));
+        await streamLogger.record(part);
+        throw toThrownError(streamFailure);
       }
       await streamLogger.record(part);
       if (part && typeof part === 'object' && 'warnings' in part) {
@@ -252,76 +255,92 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     const messages: ModelMessage[] = [{ role: 'user', content: task.prompt }];
 
     while (!finish.accepted && turns < options.config.limits.turns && !workSignal.aborted) {
-      const turnBudget = options.config.limits.turns - turns;
       const invocationMessages = [...messages];
-      const { steps, responseMessages, usage, warnings } = await withProviderRetries(async () => {
-        const agent = new ToolLoopAgent({
-          model: openrouter(options.modelId, { usage: { include: true } }),
-          instructions: systemPrompt,
-          tools,
-          reasoning: requestedReasoning,
-          ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
-          stopWhen: [({ steps }) => finish.accepted && steps.length > 0, isStepCount(turnBudget)],
-          prepareStep: ({ messages: stepMessages }) => ({
-            messages: evictStaleViewImages(stepMessages),
-          }),
-          providerOptions: {
-            openrouter: { user: runId },
-          },
-        });
-
-        const result = await agent.stream({
-          messages: invocationMessages,
-          abortSignal: workSignal,
-          timeout: { totalMs: remainingMs(deadline) },
-          onStepStart: event => logger.event('agent.step.start', {
-            stepNumber: turns + event.stepNumber,
-            messageCount: event.messages.length,
-          }),
-          onStepEnd: async event => {
-            cost += usageCost(event.usage);
-            await applyReasoningWarnings(event.warnings, 'agent.step.end');
-            await logger.event('agent.step.end', {
-              stepNumber: turns + event.stepNumber,
-              finishReason: event.finishReason,
-              usage: event.usage,
-              performance: event.performance,
-              warnings: event.warnings,
-              reasoningEffort: usedReasoningEffort,
-            });
-          },
-        });
-
-        await consumeAgentStream(result, logger, terminal, warnings => applyReasoningWarnings(warnings, 'agent.stream'));
-        const [nextSteps, nextResponseMessages, nextUsage, nextWarnings] = await Promise.all([
-          result.steps,
-          result.responseMessages,
-          result.usage,
-          result.warnings,
-        ]);
-        return {
-          steps: nextSteps,
-          responseMessages: nextResponseMessages,
-          usage: nextUsage,
-          warnings: nextWarnings,
-        };
-      }, {
-        signal: workSignal,
-        onRetry: async ({ attempt, maxAttempts, delayMs, error }) => {
-          await logger.event('agent.invocation.retry', {
-            attempt,
-            maxAttempts,
-            delayMs,
-            error,
+      const completedMessages: ModelMessage[] = [];
+      let completedSteps = 0;
+      let usage: unknown;
+      let warnings: unknown;
+      try {
+        ({ usage, warnings } = await withProviderRetries(async () => {
+          const remainingTurns = Math.max(1, options.config.limits.turns - turns - completedSteps);
+          const agent = new ToolLoopAgent({
+            model: openrouter(options.modelId, { usage: { include: true } }),
+            instructions: systemPrompt,
+            tools,
+            reasoning: requestedReasoning,
+            ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
+            stopWhen: [({ steps }) => finish.accepted && steps.length > 0, isStepCount(remainingTurns)],
+            prepareStep: ({ messages: stepMessages }) => ({
+              messages: evictStaleViewImages(stepMessages),
+            }),
+            providerOptions: {
+              openrouter: { user: runId },
+            },
           });
-          terminal.phase(
-            `Provider error, retrying in ${delayMs / 1000}s (${attempt}/${maxAttempts - 1})…`,
-          );
-        },
-      });
+
+          const result = await agent.stream({
+            messages: [...invocationMessages, ...completedMessages],
+            abortSignal: workSignal,
+            timeout: { totalMs: remainingMs(deadline) },
+            onStepStart: event => logger.event('agent.step.start', {
+              stepNumber: turns + completedSteps,
+              messageCount: event.messages.length,
+            }),
+            onStepEnd: async event => {
+              completedMessages.push(...(event.response.messages as ModelMessage[]));
+              const stepNumber = turns + completedSteps;
+              completedSteps += 1;
+              cost += usageCost(event.usage);
+              await applyReasoningWarnings(event.warnings, 'agent.step.end');
+              await logger.event('agent.step.end', {
+                stepNumber,
+                finishReason: event.finishReason,
+                usage: event.usage,
+                performance: event.performance,
+                warnings: event.warnings,
+                reasoningEffort: usedReasoningEffort,
+              });
+            },
+          });
+
+          await consumeAgentStream(result, logger, terminal, streamWarnings => applyReasoningWarnings(streamWarnings, 'agent.stream'));
+          const [nextUsage, nextWarnings] = await Promise.all([
+            result.usage,
+            result.warnings,
+          ]);
+          return {
+            usage: nextUsage,
+            warnings: nextWarnings,
+          };
+        }, {
+          signal: workSignal,
+          onRetry: async ({ attempt, maxAttempts, delayMs, error }) => {
+            await logger.event('agent.invocation.retry', {
+              attempt,
+              maxAttempts,
+              delayMs,
+              error,
+              completedSteps,
+            });
+            terminal.phase(
+              completedSteps > 0
+                ? `Provider error after ${completedSteps} step${completedSteps === 1 ? '' : 's'}, retrying in ${delayMs / 1000}s (${attempt}/${maxAttempts - 1})…`
+                : `Provider error, retrying in ${delayMs / 1000}s (${attempt}/${maxAttempts - 1})…`,
+            );
+          },
+        }));
+      } catch (error) {
+        if (completedSteps === 0 || interrupted || workSignal.aborted || !isRetryableProviderError(error)) {
+          throw error;
+        }
+        await logger.event('agent.invocation.partial', { turns: turns + completedSteps, error });
+        terminal.phase(
+          `Provider stream dropped after ${completedSteps} completed step${completedSteps === 1 ? '' : 's'}; continuing…`,
+        );
+      }
       await applyReasoningWarnings(warnings, 'agent.invocation.end');
-      turns += steps.length;
-      messages.push(...responseMessages);
+      turns += completedSteps;
+      messages.push(...completedMessages);
       const compacted = evictStaleViewImages(messages);
       messages.length = 0;
       messages.push(...compacted);

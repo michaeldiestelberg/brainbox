@@ -118,8 +118,31 @@ export function isPathInside(root: string, candidate: string): boolean {
   return relative === '' || (!relative.startsWith(`..${path.sep}`) && relative !== '..' && !path.isAbsolute(relative));
 }
 
+function objectDetail(value: object): string | undefined {
+  const record = value as Record<string, unknown>;
+  const nested = record.error && typeof record.error === 'object'
+    ? record.error as Record<string, unknown>
+    : record;
+  const message = nested.message ?? record.message;
+  const code = nested.code ?? record.code;
+  const parts: string[] = [];
+  if (typeof code === 'string' || typeof code === 'number') parts.push(String(code));
+  if (typeof message === 'string' && message) parts.push(message);
+  if (parts.length) return [...new Set(parts)].join(': ');
+  try {
+    const json = JSON.stringify(value);
+    if (json && json !== '{}' && json !== '[]') return json;
+  } catch {
+    // circular or otherwise unserializable
+  }
+  return undefined;
+}
+
 export function errorMessage(error: unknown): string {
-  if (!(error instanceof Error)) return String(error);
+  if (!(error instanceof Error)) {
+    if (error && typeof error === 'object') return objectDetail(error) ?? String(error);
+    return String(error);
+  }
 
   const json = (error as Error & { json?: unknown }).json;
   if (json && typeof json === 'object') {
@@ -130,6 +153,11 @@ export function errorMessage(error: unknown): string {
     if (typeof detail === 'string' && detail && detail !== error.message) {
       return `${error.message}: ${detail}`;
     }
+  }
+
+  if ((!error.message || error.message === '[object Object]') && error.cause !== undefined) {
+    const cause = errorMessage(error.cause);
+    if (cause && cause !== '[object Object]') return cause;
   }
 
   return error.message;

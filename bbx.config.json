@@ -1,7 +1,7 @@
 {
   "tasksDir": "./tasks",
-  "artifactsDir": "./artifacts",
-  "logsDir": "./logs",
+  "artifactsDir": "../brainbox-output/artifacts",
+  "logsDir": "../brainbox-output/logs",
   "systemPromptFile": "./SYSTEM_PROMPT.md",
   "limits": {
     "turns": 200,

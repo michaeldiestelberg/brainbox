@@ -6,6 +6,7 @@ import {
   errorFromProviderStreamPart,
   isRetryableProviderError,
   providerRetryDelayMs,
+  toThrownError,
   unwrapProviderError,
   withProviderRetries,
 } from '../src/provider-retry.js';
@@ -35,6 +36,11 @@ test('classifies provider and network failures as retryable', () => {
   assert.equal(isRetryableProviderError(new Error('Connect Timeout Error')), true);
   assert.equal(isRetryableProviderError(new EmptyResponseBodyError()), true);
   assert.equal(isRetryableProviderError(new Error('Provider stream aborted.')), true);
+  assert.equal(
+    isRetryableProviderError(toThrownError({ code: 'server_error', message: 'Provider disconnected' })),
+    true,
+  );
+  assert.equal(isRetryableProviderError({ code: 'timeout', message: 'The provider did not respond' }), true);
   assert.equal(
     isRetryableProviderError(new RetryError({
       message: 'Failed after retries',
@@ -75,6 +81,12 @@ test('stream error and abort parts become thrown failures', () => {
     /connection lost/,
   );
   assert.equal(errorFromProviderStreamPart({ type: 'text-delta' }), undefined);
+});
+
+test('plain stream error objects become Error instances with the provider message', () => {
+  const thrown = toThrownError({ code: 'server_error', message: 'Provider disconnected' });
+  assert.equal(thrown.message, 'server_error: Provider disconnected');
+  assert.deepEqual(thrown.cause, { code: 'server_error', message: 'Provider disconnected' });
 });
 
 test('retries the same payload with backoff and then throws the original error', async () => {
