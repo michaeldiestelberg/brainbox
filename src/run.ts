@@ -233,12 +233,21 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     await logger.event('model.selected', { model, maxOutputTokens, reasoningEffort: usedReasoningEffort });
 
     const sandboxName = createSandboxName(runId);
+    // @vercel/sandbox only auto-loads OIDC; access-token auth must be passed explicitly.
+    const sandboxToken = process.env.VERCEL_TOKEN?.trim();
+    const sandboxTeamId = process.env.VERCEL_TEAM_ID?.trim();
+    const sandboxProjectId = process.env.VERCEL_PROJECT_ID?.trim();
+    const explicitSandboxAuth =
+      sandboxToken && sandboxTeamId && sandboxProjectId
+        ? { token: sandboxToken, teamId: sandboxTeamId, projectId: sandboxProjectId }
+        : undefined;
     sandbox = await Sandbox.create({
       name: sandboxName,
       persistent: false,
       timeout: durationMs + 120_000,
       tags: { app: 'bbx', run: runId.slice(0, 64) },
       signal: workSignal,
+      ...explicitSandboxAuth,
     });
     await logger.event('sandbox.created', {
       name: sandbox.name,
