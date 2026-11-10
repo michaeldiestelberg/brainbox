@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { requireOpenRouterApiKey, validateOpenRouterKey } from '../src/openrouter.js';
+import { promptCachingSettings, requireOpenRouterApiKey, validateOpenRouterKey } from '../src/openrouter.js';
 
 test('requireOpenRouterApiKey reads a trimmed key and fails when unset', () => {
   const previous = process.env.OPENROUTER_API_KEY;
@@ -39,4 +39,12 @@ test('validateOpenRouterKey reports remaining credits and HTTP failures', async 
   } finally {
     globalThis.fetch = original;
   }
+});
+
+test('prompt caching is requested only for Anthropic models', () => {
+  assert.deepEqual(promptCachingSettings('anthropic/claude-fable-5.2'), {
+    cache_control: { type: 'ephemeral' },
+  });
+  assert.deepEqual(promptCachingSettings('openai/gpt-6.1-terra'), {});
+  assert.deepEqual(promptCachingSettings('some-lab/anthropic-compatible'), {});
 });

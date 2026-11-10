@@ -192,6 +192,12 @@ The agent gets a short list of tools. Together they are enough to operate the co
 
 The sandbox has network access, so the agent can install packages and fetch whatever it needs to do the job.
 
+### What a run costs
+
+Every step of the loop sends the whole conversation again, so input tokens are billed many times over. Most providers soften that by caching the repeated part on their own. Anthropic only caches when asked, so `bbx` asks: for `anthropic/*` models it sets `cache_control` on each request, and repeated context is billed at the cheaper cache-read rate. Nothing about the run changes for the model.
+
+Each step's token counts, cached tokens, and cost are in `events.log` (`agent.step.end`), and the total is `cost` in `result.json`.
+
 ## Development
 
 ```bash

@@ -18,7 +18,7 @@ import {
   reasoningLevelFromWarnings,
   type ReasoningEffort,
 } from './models.js';
-import { createBbxOpenRouter } from './openrouter.js';
+import { createBbxOpenRouter, promptCachingSettings } from './openrouter.js';
 import {
   errorFromProviderStreamPart,
   isRetryableProviderError,
@@ -248,7 +248,13 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     const models = await fetchModels(AbortSignal.any([workSignal, AbortSignal.timeout(15_000)]));
     const model = findRunnableModel(models, options.modelId);
     const maxOutputTokens = getMaxOutputTokens(model);
-    await logger.event('model.selected', { model, maxOutputTokens, reasoningEffort: usedReasoningEffort });
+    const promptCaching = promptCachingSettings(options.modelId);
+    await logger.event('model.selected', {
+      model,
+      maxOutputTokens,
+      reasoningEffort: usedReasoningEffort,
+      promptCaching: promptCaching.cache_control ? 'requested' : 'provider default',
+    });
 
     const sandboxName = createSandboxName(runId);
     sandbox = await Sandbox.create({
@@ -284,7 +290,7 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
         ({ usage, warnings } = await withProviderRetries(async () => {
           const remainingTurns = Math.max(1, options.config.limits.turns - turns - completedSteps);
           const agent = new ToolLoopAgent({
-            model: openrouter(options.modelId, { usage: { include: true } }),
+            model: openrouter(options.modelId, { usage: { include: true }, ...promptCaching }),
             instructions: systemPrompt,
             tools,
             reasoning: requestedReasoning,
