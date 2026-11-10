@@ -184,7 +184,7 @@ async function commandOutput(command: Command, logger: RunLogger): Promise<Recor
   };
 }
 
-async function validateDeclaredArtifacts(
+export async function validateDeclaredArtifacts(
   sandbox: Sandbox,
   artifacts: DeclaredArtifact[],
   signal: AbortSignal,
@@ -223,6 +223,14 @@ async function validateDeclaredArtifacts(
     normalized.push(artifact.description === undefined
       ? { path: relative }
       : { path: relative, description: artifact.description });
+  }
+
+  if (normalized.length === 0) {
+    return {
+      valid: false,
+      message: `No artifacts declared. Save the deliverable under ${SANDBOX_ARTIFACTS} and list it in "artifacts".`,
+      artifacts: [],
+    };
   }
 
   return { valid: true, message: 'Completion accepted.', artifacts: normalized };
@@ -413,7 +421,7 @@ export function createSandboxTools(context: ToolContext) {
 
     finish_task: tool({
       description:
-        'Finish the task. Call this exactly once after all work is complete. Artifact paths may be relative to /vercel/sandbox/artifacts or absolute paths inside it.',
+        'Finish the task. Call this exactly once after all work is complete, and declare at least one artifact; a call without artifacts is rejected. Artifact paths may be relative to /vercel/sandbox/artifacts or absolute paths inside it.',
       inputSchema: z.object({
         summary: z.string().min(1),
         artifacts: z.array(z.object({

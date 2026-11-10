@@ -5,7 +5,7 @@ import { parseArgs } from 'node:util';
 import { errorMessage, loadConfig, loadProjectEnvironment, readSystemPrompt } from './config.js';
 import { fetchModels, filterModels, formatModelsTable, parseReasoningEffort } from './models.js';
 import { validateOpenRouterKey } from './openrouter.js';
-import { runTask } from './run.js';
+import { runTask, sandboxAccessTokenAuth } from './run.js';
 
 const HELP = `bbx — run AI agent tasks in disposable Vercel Sandboxes
 
@@ -64,23 +64,25 @@ async function doctor(configPath?: string): Promise<boolean> {
   } catch (error) {
     checks.push(['system prompt', false, errorMessage(error)]);
   }
-  const projectFile = path.join(config.baseDir, '.vercel', 'project.json');
-  const repoFile = path.join(config.baseDir, '.vercel', 'repo.json');
-  const linkFile = existsSync(projectFile) ? projectFile : existsSync(repoFile) ? repoFile : undefined;
-  checks.push([
-    'Vercel project',
-    linkFile !== undefined,
-    linkFile ?? `${path.join(config.baseDir, '.vercel')}/{project.json,repo.json}`,
-  ]);
-
   const token = process.env.VERCEL_OIDC_TOKEN;
   const apiKey = process.env.OPENROUTER_API_KEY?.trim();
   const expiry = token ? oidcExpiry(token) : undefined;
   const oidcValid = Boolean(token && (!expiry || expiry.getTime() > Date.now()));
-  const explicitSandboxAuth = Boolean(
-    process.env.VERCEL_TOKEN && process.env.VERCEL_TEAM_ID && process.env.VERCEL_PROJECT_ID,
-  );
+  const explicitSandboxAuth = sandboxAccessTokenAuth() !== undefined;
   const sandboxAuthValid = oidcValid || explicitSandboxAuth;
+
+  const projectFile = path.join(config.baseDir, '.vercel', 'project.json');
+  const repoFile = path.join(config.baseDir, '.vercel', 'repo.json');
+  const linkFile = existsSync(projectFile) ? projectFile : existsSync(repoFile) ? repoFile : undefined;
+  // Access-token auth names the project itself, so it does not need a local `vercel link`.
+  checks.push([
+    'Vercel project',
+    linkFile !== undefined || explicitSandboxAuth,
+    linkFile
+      ?? (explicitSandboxAuth
+        ? 'VERCEL_PROJECT_ID is set (no local link needed)'
+        : `${path.join(config.baseDir, '.vercel')}/{project.json,repo.json}`),
+  ]);
   let openRouterAuthValid = Boolean(apiKey);
   if (!apiKey) {
     checks.push([

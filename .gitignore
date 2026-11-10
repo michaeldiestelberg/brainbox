@@ -2,6 +2,7 @@ node_modules/
 dist/
 .env*
 !.env.example
+bbx.config.local.json
 artifacts/*
 !artifacts/.gitkeep
 logs/*

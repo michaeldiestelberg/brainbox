@@ -3,10 +3,8 @@ import { OPENROUTER_API_BASE } from './openrouter.js';
 
 const reasoningOptionSchema = z
   .object({
-    type: z.enum(['effort', 'toggle', 'budget_tokens']),
+    type: z.literal('effort'),
     values: z.array(z.string()).optional(),
-    min: z.number().optional(),
-    max: z.number().optional(),
   })
   .passthrough();
 
@@ -209,23 +207,15 @@ function hasUnsupportedReasoningWarning(warnings: unknown): boolean {
   });
 }
 
-/** Override from SDK warnings, or undefined when warnings do not change the level. */
+/**
+ * Override from SDK warnings, or undefined when warnings do not change the level.
+ * A remap wins; an unsupported warning falls back to the provider default.
+ */
 export function reasoningLevelFromWarnings(warnings: unknown): string | undefined {
   const remapped = remappedReasoningFromWarnings(warnings);
   if (remapped) return remapped;
   if (hasUnsupportedReasoningWarning(warnings)) return PROVIDER_DEFAULT_LABEL;
   return undefined;
-}
-
-/**
- * Effective reasoning level after SDK warnings.
- * A remap wins; an unsupported warning falls back to the provider default.
- */
-export function resolveUsedReasoningLevel(
-  requested: ReasoningEffort | undefined,
-  warnings: unknown,
-): string {
-  return reasoningLevelFromWarnings(warnings) ?? formatReasoningLevel(requested);
 }
 
 export function parseReasoningEffort(value?: string): ReasoningEffort | undefined {
@@ -236,44 +226,14 @@ export function parseReasoningEffort(value?: string): ReasoningEffort | undefine
   throw new Error(`Invalid reasoning effort. Use one of: ${REASONING_EFFORTS.join(', ')}.`);
 }
 
-/** Effort values advertised by the catalog, if the model supports configurable effort. */
-export function getReasoningEffortValues(model: CatalogModel): string[] | undefined {
-  const effortOption = model.reasoning_options?.find(option => option.type === 'effort');
-  if (!effortOption?.values?.length) return undefined;
-  return effortOption.values;
-}
-
 /**
- * Human-readable reasoning controls for a model.
- * Effort levels (what `--reasoning-effort` accepts) come first; then toggle/budget.
+ * Human-readable reasoning controls for a model: the effort levels
+ * `--reasoning-effort` accepts, "fixed" when reasoning cannot be tuned, or "—".
  */
 export function formatReasoningSummary(model: CatalogModel): string {
-  const options = model.reasoning_options ?? [];
-  if (options.length === 0) {
-    return (model.tags ?? []).includes('reasoning') ? 'fixed' : '—';
-  }
-
-  const effort = options.find(option => option.type === 'effort' && option.values?.length);
-  const parts: string[] = [];
-  if (effort?.values?.length) {
-    parts.push(effort.values.join(', '));
-  }
-  if (options.some(option => option.type === 'toggle')) {
-    parts.push('toggle');
-  }
-  for (const option of options) {
-    if (option.type !== 'budget_tokens') continue;
-    if (option.min != null && option.max != null) {
-      parts.push(`budget ${option.min}–${option.max}`);
-    } else if (option.min != null) {
-      parts.push(`budget ≥${option.min}`);
-    } else if (option.max != null) {
-      parts.push(`budget ≤${option.max}`);
-    } else {
-      parts.push('budget');
-    }
-  }
-  return parts.length > 0 ? parts.join(' · ') : '—';
+  const efforts = (model.reasoning_options ?? []).flatMap(option => option.values ?? []);
+  if (efforts.length > 0) return efforts.join(', ');
+  return (model.tags ?? []).includes('reasoning') ? 'fixed' : '—';
 }
 
 export function formatCapabilityTags(tags: readonly string[] | null | undefined): string {

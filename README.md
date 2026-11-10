@@ -4,7 +4,7 @@
 
 `bbx` is a CLI that uses [OpenRouter](https://openrouter.ai/) and [Vercel Sandbox](https://vercel.com/docs/sandbox) together. You give it a text-file task and a model ID. It calls that model through OpenRouter, starts an AI agent in a disposable sandbox, downloads the files the agent declared, writes a full observable log, then permanently deletes the sandbox.
 
-Use it to satisfy curiosity about new models. When one shows up on OpenRouter, give it a task, let it operate in a sandbox, and watch what it does. I publish my experiments with new AI models using bbx on [productized.tech/model](https://productized.tech/models).
+Use it to satisfy curiosity about new models. When one shows up on OpenRouter, give it a task, let it operate in a sandbox, and watch what it does. I publish my experiments with new AI models using bbx on [productized.tech/models](https://productized.tech/models).
 
 Sandbox has a generous [Hobby free tier](https://vercel.com/docs/sandbox/pricing). Within those quotas, the sandbox itself does not add extra cost.
 
@@ -43,13 +43,17 @@ vercel env pull .env.local --yes
 
 Put `OPENROUTER_API_KEY` in `.env.local` next to your config file (see `.env.example`). `vercel env pull` writes `VERCEL_OIDC_TOKEN`, which authenticates Sandbox. Both stay on your machine and are never copied into the sandbox. The OIDC token expires after about 12 hours; run `vercel env pull .env.local --yes` again if sandbox authentication starts failing.
 
+Where `vercel link` is not practical (CI, a remote machine), set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID` instead. When all three are present, `bbx` authenticates Sandbox with that access token and does not need the OIDC token or a linked project.
+
 Then check that everything is in place:
 
 ```bash
 bbx doctor
 ```
 
-This repo's committed `bbx.config.json` uses the in-repo `SYSTEM_PROMPT.md` and writes artifacts and logs under `./artifacts` and `./logs`. `bbx doctor` will tell you if the prompt file is missing.
+This repo's committed `bbx.config.json` uses the in-repo `SYSTEM_PROMPT.md` and writes artifacts and logs to `./artifacts` and `./logs` inside this checkout. Both folders are git-ignored. `bbx doctor` will tell you if the prompt file is missing.
+
+To keep output somewhere else, such as a separate repository, copy the config to `bbx.config.local.json` (git-ignored), change `artifactsDir` and `logsDir`, and pass `--config bbx.config.local.json` on each command.
 
 ### Write a task
 
@@ -106,17 +110,17 @@ Each run gets an ID like `2026-08-16-x-ai-grok-4.6-ea756923` (UTC date, a filesy
 
 ```text
 artifacts/<run-id>/                   The deliverables
-logs/<run-id>/events.jsonl           Append-only event stream for the whole run
+logs/<run-id>/events.log             Append-only event stream for the whole run
 logs/<run-id>/transcript.txt         Human-readable progress (same shape as the live terminal, full text)
 logs/<run-id>/result.json            Final status and summary
 logs/<run-id>/artifact-manifest.json Sizes and SHA-256 hashes
 ```
 
-`events.jsonl` is an append-only stream of pretty-printed JSON records separated by blank lines. Command output is stored in full (very large output may still be shortened before it is returned to the model, to protect the context window). The log keeps plaintext reasoning summaries the provider exposes and replaces encrypted reasoning traces with a placeholder; providers do not expose private hidden chain-of-thought.
+`events.log` is an append-only stream of pretty-printed JSON records separated by blank lines, which keeps it easy to read but means it is not JSON Lines. Runs made before November 2026 named this file `events.jsonl`; the content format is the same. Command output is stored in full (very large output may still be shortened before it is returned to the model, to protect the context window). The log keeps plaintext reasoning summaries the provider exposes and replaces encrypted reasoning traces with a placeholder; providers do not expose private hidden chain-of-thought.
 
 `transcript.txt` mirrors the live terminal progress (run header, thinking, tool calls/results, phases). Reasoning and tool-call details are written in full instead of the short previews shown on screen.
 
-If a run fails or hits a limit, `bbx` still tries to salvage whatever is already in the sandbox artifact directory into `artifacts/<run-id>.partial`.
+If a run fails or hits a limit, `bbx` still tries to salvage whatever is already in the sandbox artifact directory into `artifacts/<run-id>.partial`. When there is nothing to salvage, no folder and no manifest are written.
 
 ## Configuration
 
@@ -130,7 +134,7 @@ If a run fails or hits a limit, `bbx` still tries to salvage whatever is already
   "systemPromptFile": "./SYSTEM_PROMPT.md",
   "limits": {
     "turns": 200,
-    "durationMinutes": 60
+    "durationMinutes": 43
   }
 }
 ```
@@ -145,6 +149,8 @@ If a run fails or hits a limit, `bbx` still tries to salvage whatever is already
 | `limits.durationMinutes`   | Wall-clock budget for the run                                            |
 
 
+Every field is optional; the example above shows the built-in defaults. The sandbox is created with a lifetime of `limits.durationMinutes` plus two minutes for downloading artifacts. Vercel's Hobby plan caps a sandbox at 45 minutes, which is why the default is 43. Raise `durationMinutes` only on a plan that allows longer sandboxes, or sandbox creation fails before the run starts.
+
 `bbx` loads `.env.local` (falling back to `.env`) from the directory that contains the config file, not from your current working directory.
 
 ## How it works
@@ -158,7 +164,7 @@ The agent is a simple tool loop:
 1. `bbx` creates a disposable Linux sandbox and an artifacts directory inside it.
 2. It sends the system prompt and your task to the model, along with a small set of tools.
 3. The model thinks, calls a tool, gets the result, and repeats.
-4. When the work is genuinely done, the agent calls `finish_task` with a short summary and the files (or directories) to download.
+4. When the work is genuinely done, the agent calls `finish_task` with a short summary and the files (or directories) to download. A call that declares no artifact, or one that does not exist, is rejected and the agent keeps working.
 5. `bbx` copies those files to your machine, writes the log, and permanently deletes the sandbox.
 
 If the model stops with an ordinary text reply instead of `finish_task`, `bbx` asks it to keep going. The loop ends when `finish_task` is accepted, or when the turn or time limit is reached.
@@ -182,7 +188,7 @@ The agent gets a short list of tools. Together they are enough to operate the co
 - `write_files` - Write one or more files.
 - `list_files` - Inspect a directory tree (type and size).
 - `view_image` - Look at an image in the sandbox when the selected model supports vision. Images are re-encoded as JPEG under a ~100KB budget (and downscaled if needed). Only the latest screenshot stays in the model context; earlier ones become short text stubs.
-- `finish_task` - End the run with a summary and the artifact files or directories to download.
+- `finish_task` - End the run with a summary and at least one artifact file or directory to download.
 
 The sandbox has network access, so the agent can install packages and fetch whatever it needs to do the job.
 

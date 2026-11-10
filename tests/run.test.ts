@@ -4,7 +4,7 @@ import type { Command, Sandbox } from '@vercel/sandbox';
 import { errorMessage } from '../src/config.js';
 import type { RunLogger } from '../src/log.js';
 import type { CatalogModel } from '../src/models.js';
-import { createRunId, createSandboxName, validateRunId } from '../src/run.js';
+import { createRunId, createSandboxName, sandboxAccessTokenAuth, validateRunId } from '../src/run.js';
 import {
   clipped,
   createSandboxTools,
@@ -32,6 +32,19 @@ test('sandbox names preserve the unique run suffix within their shorter limit', 
   assert.ok(name.length <= 63);
   assert.match(name, /^bbx-/);
   assert.match(name, /-deadbeef$/);
+});
+
+test('sandbox access-token auth needs all three variables', () => {
+  assert.equal(sandboxAccessTokenAuth({}), undefined);
+  assert.equal(sandboxAccessTokenAuth({ VERCEL_TOKEN: 't', VERCEL_TEAM_ID: 'team' }), undefined);
+  assert.equal(
+    sandboxAccessTokenAuth({ VERCEL_TOKEN: 't', VERCEL_TEAM_ID: 'team', VERCEL_PROJECT_ID: '  ' }),
+    undefined,
+  );
+  assert.deepEqual(
+    sandboxAccessTokenAuth({ VERCEL_TOKEN: ' t ', VERCEL_TEAM_ID: 'team', VERCEL_PROJECT_ID: 'prj' }),
+    { token: 't', teamId: 'team', projectId: 'prj' },
+  );
 });
 
 test('artifact paths are normalized safely inside the sandbox artifact root', () => {
@@ -129,6 +142,32 @@ test('foreground commands are not retained after their output is returned', asyn
   await commandStatus.execute({ commandId: 'command-1', wait: false });
 
   assert.equal(getCommandCalls, 1);
+});
+
+test('finish_task is rejected until at least one existing artifact is declared', async () => {
+  const events: string[] = [];
+  const sandbox = {
+    // Stands in for `find <path> -maxdepth 0 -printf %y` on an existing regular file.
+    runCommand: async () => ({ exitCode: 0, stdout: async () => 'f' }),
+  } as unknown as Sandbox;
+  const logger = { event: async (type: string) => { events.push(type); } } as unknown as RunLogger;
+  const model = { id: 'example/model', name: 'Model', type: 'language', tags: ['tool-use'] } as CatalogModel;
+  const finish = { accepted: false, artifacts: [] as Array<{ path: string }> };
+  const tools = createSandboxTools({ sandbox, logger, signal: AbortSignal.timeout(1_000), model, finish });
+  const finishTask = tools.finish_task as unknown as {
+    execute: (input: Record<string, unknown>) => Promise<{ accepted: boolean; error?: string }>;
+  };
+
+  const empty = await finishTask.execute({ summary: 'The essay is in this summary.', artifacts: [] });
+  assert.equal(empty.accepted, false);
+  assert.match(empty.error ?? '', /No artifacts declared/);
+  assert.equal(finish.accepted, false);
+  assert.deepEqual(events, ['agent.finish.rejected']);
+
+  const declared = await finishTask.execute({ summary: 'Done.', artifacts: [{ path: 'essay.md' }] });
+  assert.equal(declared.accepted, true);
+  assert.equal(finish.accepted, true);
+  assert.deepEqual(finish.artifacts, [{ path: 'essay.md' }]);
 });
 
 test('sandbox initialization creates the nested artifact directory recursively', async () => {

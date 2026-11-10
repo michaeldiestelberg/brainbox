@@ -73,3 +73,17 @@ export function evictStaleViewImages(messages: ModelMessage[]): ModelMessage[] {
     return { ...message, content: nextContent } as ModelMessage;
   });
 }
+
+/**
+ * Conversation to send on the next agent invocation: everything so far plus the
+ * steps that just completed, with stale screenshots evicted.
+ *
+ * Always returns a new array. `evictStaleViewImages` hands back its input when
+ * there is nothing to evict, so callers must not clear the old history in place.
+ */
+export function withCompletedMessages(
+  history: readonly ModelMessage[],
+  completed: readonly ModelMessage[],
+): ModelMessage[] {
+  return [...evictStaleViewImages([...history, ...completed])];
+}

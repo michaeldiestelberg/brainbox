@@ -8,6 +8,12 @@ const BINARY_KEY = /^(base64|data)$/i;
 const ENCRYPTED_REASONING_KEY = /encrypt|thoughtSignature|redacted_reasoning/i;
 const ENCRYPTED_REASONING_PLACEHOLDER = '[OMITTED encrypted reasoning]';
 
+/**
+ * Pretty-printed JSON records separated by blank lines. Deliberately not `.jsonl`:
+ * the records span several lines, so JSON Lines tools cannot read the file.
+ */
+export const EVENTS_FILENAME = 'events.log';
+
 export class RunLogger {
   readonly directory: string;
   readonly eventsFile: string;
@@ -18,7 +24,7 @@ export class RunLogger {
 
   private constructor(directory: string) {
     this.directory = directory;
-    this.eventsFile = path.join(directory, 'events.jsonl');
+    this.eventsFile = path.join(directory, EVENTS_FILENAME);
     this.transcriptFile = path.join(directory, 'transcript.txt');
   }
 

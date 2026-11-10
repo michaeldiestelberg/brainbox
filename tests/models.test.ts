@@ -5,12 +5,12 @@ import {
   filterModels,
   findRunnableModel,
   formatModelsTable,
+  formatReasoningLevel,
   formatReasoningSummary,
   getMaxOutputTokens,
-  getReasoningEffortValues,
   parseReasoningEffort,
+  reasoningLevelFromWarnings,
   remappedReasoningFromWarnings,
-  resolveUsedReasoningLevel,
   toCatalogModel,
   type CatalogModel,
   type OpenRouterModel,
@@ -43,9 +43,10 @@ test('uses positive catalog output limits and ignores zero sentinels', () => {
 test('validates and resolves reasoning effort without a catalog gate', () => {
   assert.equal(parseReasoningEffort('high'), 'high');
   assert.throws(() => parseReasoningEffort('extreme'), /Invalid reasoning effort/);
-  assert.equal(resolveUsedReasoningLevel(undefined, []), 'provider default');
-  assert.equal(resolveUsedReasoningLevel('provider-default', []), 'provider default');
-  assert.equal(resolveUsedReasoningLevel('high', []), 'high');
+  assert.equal(formatReasoningLevel(undefined), 'provider default');
+  assert.equal(formatReasoningLevel('provider-default'), 'provider default');
+  assert.equal(formatReasoningLevel('high'), 'high');
+  assert.equal(reasoningLevelFromWarnings([]), undefined);
   assert.equal(
     remappedReasoningFromWarnings([{
       type: 'compatibility',
@@ -55,7 +56,7 @@ test('validates and resolves reasoning effort without a catalog gate', () => {
     'high',
   );
   assert.equal(
-    resolveUsedReasoningLevel('xhigh', [{
+    reasoningLevelFromWarnings([{
       type: 'compatibility',
       feature: 'reasoning',
       details: 'reasoning "xhigh" is not directly supported by this model. mapped to effort "high".',
@@ -63,7 +64,7 @@ test('validates and resolves reasoning effort without a catalog gate', () => {
     'high',
   );
   assert.equal(
-    resolveUsedReasoningLevel('high', [{
+    reasoningLevelFromWarnings([{
       type: 'unsupported',
       feature: 'reasoning',
       details: 'reasoning "high" is not supported by this model.',
@@ -73,26 +74,13 @@ test('validates and resolves reasoning effort without a catalog gate', () => {
 });
 
 test('reads and summarizes reasoning options', () => {
-  assert.deepEqual(getReasoningEffortValues(runnable), ['low', 'high']);
-  assert.equal(getReasoningEffortValues({ ...runnable, reasoning_options: [{ type: 'toggle' }] }), undefined);
   assert.equal(formatReasoningSummary(runnable), 'low, high');
   assert.equal(
     formatReasoningSummary({
       ...runnable,
-      reasoning_options: [
-        { type: 'toggle' },
-        { type: 'budget_tokens', min: 1024, max: 32_768 },
-        { type: 'effort', values: ['minimal', 'high'] },
-      ],
+      reasoning_options: [{ type: 'effort', values: ['minimal', 'high'] }],
     }),
-    'minimal, high · toggle · budget 1024–32768',
-  );
-  assert.equal(
-    formatReasoningSummary({
-      ...runnable,
-      reasoning_options: [{ type: 'budget_tokens', min: 128 }],
-    }),
-    'budget ≥128',
+    'minimal, high',
   );
   assert.equal(
     formatReasoningSummary({ ...runnable, tags: ['reasoning'], reasoning_options: null }),
