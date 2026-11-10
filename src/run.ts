@@ -32,6 +32,7 @@ import {
   promptCachingSettings,
   requireOpenRouterApiKey,
 } from './openrouter.js';
+import { proxyFetch } from './proxy.js';
 import {
   errorFromProviderStreamPart,
   isRetryableProviderError,
@@ -288,6 +289,7 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     if (blocker) throw new Error(blocker);
 
     const sandboxName = createSandboxName(runId);
+    const sandboxFetch = proxyFetch({ bodyTimeout: 0 });
     sandbox = await Sandbox.create({
       name: sandboxName,
       persistent: false,
@@ -296,6 +298,9 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
       signal: workSignal,
       // @vercel/sandbox only auto-loads OIDC; access-token auth must be passed explicitly.
       ...sandboxAccessTokenAuth(),
+      // The SDK connects directly by default, which fails behind an HTTPS proxy. Like the
+      // SDK's own client, this fetch has no body timeout, so long-running commands can stream.
+      ...(sandboxFetch ? { fetch: sandboxFetch } : {}),
     });
     await logger.event('sandbox.created', {
       name: sandbox.name,

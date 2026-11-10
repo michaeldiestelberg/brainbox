@@ -16,6 +16,10 @@ import {
   type OpenRouterModel,
 } from '../src/models.js';
 
+// These tests replace globalThis.fetch, which bbx bypasses when the environment names a proxy.
+delete process.env.HTTPS_PROXY;
+delete process.env.https_proxy;
+
 const runnable: CatalogModel = {
   id: 'example/agent',
   name: 'Agent',

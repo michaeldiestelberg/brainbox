@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { OPENROUTER_API_BASE } from './openrouter.js';
+import { bbxFetch } from './proxy.js';
 
 const reasoningOptionSchema = z
   .object({
@@ -160,7 +161,7 @@ export function toCatalogModel(raw: OpenRouterModel): CatalogModel {
 }
 
 export async function fetchModels(signal?: AbortSignal): Promise<CatalogModel[]> {
-  const response = await fetch(
+  const response = await bbxFetch()(
     `${OPENROUTER_API_BASE}/models?output_modalities=all`,
     signal ? { signal } : undefined,
   );

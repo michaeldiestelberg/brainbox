@@ -7,6 +7,10 @@ import {
   validateOpenRouterKey,
 } from '../src/openrouter.js';
 
+// These tests replace globalThis.fetch, which bbx bypasses when the environment names a proxy.
+delete process.env.HTTPS_PROXY;
+delete process.env.https_proxy;
+
 test('requireOpenRouterApiKey reads a trimmed key and fails when unset', () => {
   const previous = process.env.OPENROUTER_API_KEY;
   try {
