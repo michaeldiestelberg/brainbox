@@ -45,6 +45,8 @@ Put `OPENROUTER_API_KEY` in `.env.local` next to your config file (see `.env.exa
 
 Where `vercel link` is not practical (CI, a remote machine), set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID` instead. When all three are present, `bbx` authenticates Sandbox with that access token and does not need the OIDC token or a linked project.
 
+Behind an HTTPS proxy, `bbx` reads `HTTPS_PROXY` and `NO_PROXY` and sends its OpenRouter and Sandbox requests through the proxy. If the proxy uses its own certificate authority, point `NODE_EXTRA_CA_CERTS` at its CA bundle.
+
 Then check that everything is in place:
 
 ```bash

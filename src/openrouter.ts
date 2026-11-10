@@ -1,5 +1,6 @@
 import { createOpenRouter, type OpenRouterProvider } from '@openrouter/ai-sdk-provider';
 import { z } from 'zod';
+import { bbxFetch, proxyFetch } from './proxy.js';
 
 export const OPENROUTER_API_BASE = 'https://openrouter.ai/api/v1';
 export const OPENROUTER_APP_URL = 'https://productized.tech';
@@ -25,6 +26,7 @@ export function requireOpenRouterApiKey(): string {
 }
 
 export function createBbxOpenRouter(): OpenRouterProvider {
+  const fetchViaProxy = proxyFetch();
   return createOpenRouter({
     apiKey: requireOpenRouterApiKey(),
     headers: {
@@ -32,6 +34,8 @@ export function createBbxOpenRouter(): OpenRouterProvider {
       'X-Title': OPENROUTER_APP_TITLE,
     },
     compatibility: 'strict',
+    // Only set behind an HTTPS proxy; otherwise the provider keeps the default fetch.
+    ...(fetchViaProxy ? { fetch: fetchViaProxy } : {}),
   });
 }
 
@@ -55,7 +59,7 @@ export type OpenRouterKeyInfo = {
 };
 
 export async function fetchOpenRouterKeyInfo(apiKey: string, signal?: AbortSignal): Promise<OpenRouterKeyInfo> {
-  const response = await fetch(`${OPENROUTER_API_BASE}/key`, {
+  const response = await bbxFetch()(`${OPENROUTER_API_BASE}/key`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     ...(signal ? { signal } : {}),
   });
