@@ -4,7 +4,7 @@
 
 `bbx` is a CLI that uses [OpenRouter](https://openrouter.ai/) and [Vercel Sandbox](https://vercel.com/docs/sandbox) together. You give it a text-file task and a model ID. It calls that model through OpenRouter, starts an AI agent in a disposable sandbox, downloads the files the agent declared, writes a full observable log, then permanently deletes the sandbox.
 
-Use it to satisfy curiosity about new models. When one shows up on OpenRouter, give it a task, let it operate in a sandbox, and watch what it does. I publish my experiments with new AI models using bbx on [productized.tech/model](https://productized.tech/models).
+Use it to satisfy curiosity about new models. When one shows up on OpenRouter, give it a task, let it operate in a sandbox, and watch what it does. I publish my experiments with new AI models using bbx on [productized.tech/models](https://productized.tech/models).
 
 Sandbox has a generous [Hobby free tier](https://vercel.com/docs/sandbox/pricing). Within those quotas, the sandbox itself does not add extra cost.
 
@@ -43,13 +43,15 @@ vercel env pull .env.local --yes
 
 Put `OPENROUTER_API_KEY` in `.env.local` next to your config file (see `.env.example`). `vercel env pull` writes `VERCEL_OIDC_TOKEN`, which authenticates Sandbox. Both stay on your machine and are never copied into the sandbox. The OIDC token expires after about 12 hours; run `vercel env pull .env.local --yes` again if sandbox authentication starts failing.
 
+Where `vercel link` is not practical (CI, a remote machine), set `VERCEL_TOKEN`, `VERCEL_TEAM_ID`, and `VERCEL_PROJECT_ID` instead. When all three are present, `bbx` authenticates Sandbox with that access token and does not need the OIDC token or a linked project.
+
 Then check that everything is in place:
 
 ```bash
 bbx doctor
 ```
 
-This repo's committed `bbx.config.json` uses the in-repo `SYSTEM_PROMPT.md` and writes artifacts and logs under `./artifacts` and `./logs`. `bbx doctor` will tell you if the prompt file is missing.
+This repo's committed `bbx.config.json` uses the in-repo `SYSTEM_PROMPT.md` and writes artifacts and logs to a sibling directory, `../brainbox-output/artifacts` and `../brainbox-output/logs`, which `bbx` creates on the first run. Point `artifactsDir` and `logsDir` at `./artifacts` and `./logs` if you would rather keep output inside this checkout. `bbx doctor` will tell you if the prompt file is missing.
 
 ### Write a task
 
@@ -144,6 +146,8 @@ If a run fails or hits a limit, `bbx` still tries to salvage whatever is already
 | `limits.turns`             | Maximum agent steps in a run                                             |
 | `limits.durationMinutes`   | Wall-clock budget for the run                                            |
 
+
+Every field is optional; the example above shows the built-in defaults. The sandbox is created with a lifetime of `limits.durationMinutes` plus two minutes for downloading artifacts. Vercel's Hobby plan caps a sandbox at 45 minutes, so on Hobby keep `durationMinutes` at 43 or lower (the committed config does), or sandbox creation fails before the run starts.
 
 `bbx` loads `.env.local` (falling back to `.env`) from the directory that contains the config file, not from your current working directory.
 

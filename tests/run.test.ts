@@ -4,7 +4,7 @@ import type { Command, Sandbox } from '@vercel/sandbox';
 import { errorMessage } from '../src/config.js';
 import type { RunLogger } from '../src/log.js';
 import type { CatalogModel } from '../src/models.js';
-import { createRunId, createSandboxName, validateRunId } from '../src/run.js';
+import { createRunId, createSandboxName, sandboxAccessTokenAuth, validateRunId } from '../src/run.js';
 import {
   clipped,
   createSandboxTools,
@@ -32,6 +32,19 @@ test('sandbox names preserve the unique run suffix within their shorter limit', 
   assert.ok(name.length <= 63);
   assert.match(name, /^bbx-/);
   assert.match(name, /-deadbeef$/);
+});
+
+test('sandbox access-token auth needs all three variables', () => {
+  assert.equal(sandboxAccessTokenAuth({}), undefined);
+  assert.equal(sandboxAccessTokenAuth({ VERCEL_TOKEN: 't', VERCEL_TEAM_ID: 'team' }), undefined);
+  assert.equal(
+    sandboxAccessTokenAuth({ VERCEL_TOKEN: 't', VERCEL_TEAM_ID: 'team', VERCEL_PROJECT_ID: '  ' }),
+    undefined,
+  );
+  assert.deepEqual(
+    sandboxAccessTokenAuth({ VERCEL_TOKEN: ' t ', VERCEL_TEAM_ID: 'team', VERCEL_PROJECT_ID: 'prj' }),
+    { token: 't', teamId: 'team', projectId: 'prj' },
+  );
 });
 
 test('artifact paths are normalized safely inside the sandbox artifact root', () => {

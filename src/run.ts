@@ -9,7 +9,7 @@ import { ArtifactDownloadError, downloadArtifacts, type ArtifactManifest } from 
 import { RunLogger } from './log.js';
 import { StreamEventLogger } from './stream-log.js';
 import { TerminalReporter } from './terminal.js';
-import { evictStaleViewImages } from './messages.js';
+import { evictStaleViewImages, withCompletedMessages } from './messages.js';
 import {
   fetchModels,
   findRunnableModel,
@@ -99,6 +99,24 @@ export function createSandboxName(runId: string): string {
     .slice(0, 63 - 'bbx--'.length - suffix.length)
     .replace(/-+$/g, '');
   return `bbx-${prefix}-${suffix}`;
+}
+
+/** Extra sandbox lifetime beyond the run budget, so artifacts can still be downloaded. */
+const SANDBOX_TIMEOUT_MARGIN_MS = 120_000;
+
+export type SandboxAccessTokenAuth = { token: string; teamId: string; projectId: string };
+
+/**
+ * Access-token credentials for Vercel Sandbox, used instead of OIDC when
+ * VERCEL_TOKEN, VERCEL_TEAM_ID, and VERCEL_PROJECT_ID are all set.
+ */
+export function sandboxAccessTokenAuth(
+  env: Record<string, string | undefined> = process.env,
+): SandboxAccessTokenAuth | undefined {
+  const token = env.VERCEL_TOKEN?.trim();
+  const teamId = env.VERCEL_TEAM_ID?.trim();
+  const projectId = env.VERCEL_PROJECT_ID?.trim();
+  return token && teamId && projectId ? { token, teamId, projectId } : undefined;
 }
 
 function remainingMs(deadline: number): number {
@@ -233,21 +251,14 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     await logger.event('model.selected', { model, maxOutputTokens, reasoningEffort: usedReasoningEffort });
 
     const sandboxName = createSandboxName(runId);
-    // @vercel/sandbox only auto-loads OIDC; access-token auth must be passed explicitly.
-    const sandboxToken = process.env.VERCEL_TOKEN?.trim();
-    const sandboxTeamId = process.env.VERCEL_TEAM_ID?.trim();
-    const sandboxProjectId = process.env.VERCEL_PROJECT_ID?.trim();
-    const explicitSandboxAuth =
-      sandboxToken && sandboxTeamId && sandboxProjectId
-        ? { token: sandboxToken, teamId: sandboxTeamId, projectId: sandboxProjectId }
-        : undefined;
     sandbox = await Sandbox.create({
       name: sandboxName,
       persistent: false,
-      timeout: durationMs + 120_000,
+      timeout: durationMs + SANDBOX_TIMEOUT_MARGIN_MS,
       tags: { app: 'bbx', run: runId.slice(0, 64) },
       signal: workSignal,
-      ...explicitSandboxAuth,
+      // @vercel/sandbox only auto-loads OIDC; access-token auth must be passed explicitly.
+      ...sandboxAccessTokenAuth(),
     });
     await logger.event('sandbox.created', {
       name: sandbox.name,
@@ -261,7 +272,7 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     terminal.sandboxReady(sandbox.region);
 
     const tools = createSandboxTools({ sandbox, logger, signal: workSignal, model, finish });
-    const messages: ModelMessage[] = [{ role: 'user', content: task.prompt }];
+    let messages: ModelMessage[] = [{ role: 'user', content: task.prompt }];
 
     while (!finish.accepted && turns < options.config.limits.turns && !workSignal.aborted) {
       const invocationMessages = [...messages];
@@ -340,6 +351,8 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
         }));
       } catch (error) {
         if (completedSteps === 0 || interrupted || workSignal.aborted || !isRetryableProviderError(error)) {
+          // Steps that finished before the failure still count toward the reported turns.
+          turns += completedSteps;
           throw error;
         }
         await logger.event('agent.invocation.partial', { turns: turns + completedSteps, error });
@@ -349,10 +362,7 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
       }
       await applyReasoningWarnings(warnings, 'agent.invocation.end');
       turns += completedSteps;
-      messages.push(...completedMessages);
-      const compacted = evictStaleViewImages(messages);
-      messages.length = 0;
-      messages.push(...compacted);
+      messages = withCompletedMessages(messages, completedMessages);
       await logger.event('agent.invocation.end', {
         turns,
         usage,

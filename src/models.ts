@@ -209,23 +209,15 @@ function hasUnsupportedReasoningWarning(warnings: unknown): boolean {
   });
 }
 
-/** Override from SDK warnings, or undefined when warnings do not change the level. */
+/**
+ * Override from SDK warnings, or undefined when warnings do not change the level.
+ * A remap wins; an unsupported warning falls back to the provider default.
+ */
 export function reasoningLevelFromWarnings(warnings: unknown): string | undefined {
   const remapped = remappedReasoningFromWarnings(warnings);
   if (remapped) return remapped;
   if (hasUnsupportedReasoningWarning(warnings)) return PROVIDER_DEFAULT_LABEL;
   return undefined;
-}
-
-/**
- * Effective reasoning level after SDK warnings.
- * A remap wins; an unsupported warning falls back to the provider default.
- */
-export function resolveUsedReasoningLevel(
-  requested: ReasoningEffort | undefined,
-  warnings: unknown,
-): string {
-  return reasoningLevelFromWarnings(warnings) ?? formatReasoningLevel(requested);
 }
 
 export function parseReasoningEffort(value?: string): ReasoningEffort | undefined {
@@ -234,13 +226,6 @@ export function parseReasoningEffort(value?: string): ReasoningEffort | undefine
     return value as ReasoningEffort;
   }
   throw new Error(`Invalid reasoning effort. Use one of: ${REASONING_EFFORTS.join(', ')}.`);
-}
-
-/** Effort values advertised by the catalog, if the model supports configurable effort. */
-export function getReasoningEffortValues(model: CatalogModel): string[] | undefined {
-  const effortOption = model.reasoning_options?.find(option => option.type === 'effort');
-  if (!effortOption?.values?.length) return undefined;
-  return effortOption.values;
 }
 
 /**
