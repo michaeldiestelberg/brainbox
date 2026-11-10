@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { access, mkdir, rename, stat } from 'node:fs/promises';
+import { access, mkdir, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import type { Sandbox } from '@vercel/sandbox';
 import type { RunLogger } from './log.js';
@@ -20,9 +20,10 @@ export type ArtifactManifest = {
 };
 
 export class ArtifactDownloadError extends Error {
-  readonly manifest: ArtifactManifest;
+  /** What was saved before the failure. Undefined when no file was downloaded. */
+  readonly manifest: ArtifactManifest | undefined;
 
-  constructor(message: string, manifest: ArtifactManifest, options?: ErrorOptions) {
+  constructor(message: string, manifest: ArtifactManifest | undefined, options?: ErrorOptions) {
     super(message, options);
     this.name = 'ArtifactDownloadError';
     this.manifest = manifest;
@@ -77,6 +78,10 @@ function descriptionFor(relative: string, declarations?: DeclaredArtifact[]): st
     ?.description;
 }
 
+/**
+ * Download the run's artifacts. A salvage (`partial: true`) that finds no file
+ * creates no folder and returns undefined, so logs never point at an empty directory.
+ */
 export async function downloadArtifacts(options: {
   sandbox: Sandbox;
   artifactsDir: string;
@@ -85,7 +90,7 @@ export async function downloadArtifacts(options: {
   logger: RunLogger;
   signal: AbortSignal;
   partial: boolean;
-}): Promise<ArtifactManifest> {
+}): Promise<ArtifactManifest | undefined> {
   const finalDirectory = path.join(
     options.artifactsDir,
     options.partial ? `${options.runId}.partial` : options.runId,
@@ -122,9 +127,22 @@ export async function downloadArtifacts(options: {
       });
       await options.logger.event('artifact.downloaded', { path: relative, bytes: info.size });
     }
+    if (options.partial && entries.length === 0) {
+      await rm(temporaryDirectory, { recursive: true, force: true });
+      return undefined;
+    }
     finalizing = true;
     await rename(temporaryDirectory, finalDirectory);
   } catch (error) {
+    if (entries.length === 0) {
+      // Nothing was saved, so there is no partial folder worth keeping.
+      await rm(temporaryDirectory, { recursive: true, force: true }).catch(() => undefined);
+      await options.logger.event('artifact.download.partial', { error });
+      throw new ArtifactDownloadError('Artifact download stopped before any file was saved.', undefined, {
+        cause: error,
+      });
+    }
+
     let recoveryError: unknown;
     let recoveredDirectory = temporaryDirectory;
 

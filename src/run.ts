@@ -6,7 +6,7 @@ import { ToolLoopAgent, isStepCount, type ModelMessage } from 'ai';
 import type { BbxConfig } from './config.js';
 import { errorMessage, readSystemPrompt, resolveTaskFile } from './config.js';
 import { ArtifactDownloadError, downloadArtifacts, type ArtifactManifest } from './artifacts.js';
-import { RunLogger } from './log.js';
+import { EVENTS_FILENAME, RunLogger } from './log.js';
 import { StreamEventLogger } from './stream-log.js';
 import { TerminalReporter } from './terminal.js';
 import { evictStaleViewImages, withCompletedMessages } from './messages.js';
@@ -210,7 +210,7 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     }
   };
   const captureLoggerError = (): void => {
-    if (logger.error !== undefined) logError ??= `events.jsonl: ${errorMessage(logger.error)}`;
+    if (logger.error !== undefined) logError ??= `${EVENTS_FILENAME}: ${errorMessage(logger.error)}`;
   };
 
   await logger.event('run.started', {
@@ -397,7 +397,7 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
         signal: cleanupSignal(120_000),
         partial: !finish.accepted,
       });
-      terminal.artifactsDownloaded(artifacts.files.length);
+      terminal.artifactsDownloaded(artifacts?.files.length ?? 0);
     } catch (error) {
       if (error instanceof ArtifactDownloadError) artifacts = error.manifest;
       runError = `Artifact download failed: ${errorMessage(error)}`;

@@ -3,10 +3,8 @@ import { OPENROUTER_API_BASE } from './openrouter.js';
 
 const reasoningOptionSchema = z
   .object({
-    type: z.enum(['effort', 'toggle', 'budget_tokens']),
+    type: z.literal('effort'),
     values: z.array(z.string()).optional(),
-    min: z.number().optional(),
-    max: z.number().optional(),
   })
   .passthrough();
 
@@ -229,36 +227,13 @@ export function parseReasoningEffort(value?: string): ReasoningEffort | undefine
 }
 
 /**
- * Human-readable reasoning controls for a model.
- * Effort levels (what `--reasoning-effort` accepts) come first; then toggle/budget.
+ * Human-readable reasoning controls for a model: the effort levels
+ * `--reasoning-effort` accepts, "fixed" when reasoning cannot be tuned, or "—".
  */
 export function formatReasoningSummary(model: CatalogModel): string {
-  const options = model.reasoning_options ?? [];
-  if (options.length === 0) {
-    return (model.tags ?? []).includes('reasoning') ? 'fixed' : '—';
-  }
-
-  const effort = options.find(option => option.type === 'effort' && option.values?.length);
-  const parts: string[] = [];
-  if (effort?.values?.length) {
-    parts.push(effort.values.join(', '));
-  }
-  if (options.some(option => option.type === 'toggle')) {
-    parts.push('toggle');
-  }
-  for (const option of options) {
-    if (option.type !== 'budget_tokens') continue;
-    if (option.min != null && option.max != null) {
-      parts.push(`budget ${option.min}–${option.max}`);
-    } else if (option.min != null) {
-      parts.push(`budget ≥${option.min}`);
-    } else if (option.max != null) {
-      parts.push(`budget ≤${option.max}`);
-    } else {
-      parts.push('budget');
-    }
-  }
-  return parts.length > 0 ? parts.join(' · ') : '—';
+  const efforts = (model.reasoning_options ?? []).flatMap(option => option.values ?? []);
+  if (efforts.length > 0) return efforts.join(', ');
+  return (model.tags ?? []).includes('reasoning') ? 'fixed' : '—';
 }
 
 export function formatCapabilityTags(tags: readonly string[] | null | undefined): string {

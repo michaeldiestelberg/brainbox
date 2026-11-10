@@ -9,7 +9,7 @@ test('config uses the default run limits', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'bbx-defaults-'));
   const config = await loadConfig(root);
 
-  assert.deepEqual(config.limits, { turns: 200, durationMinutes: 60 });
+  assert.deepEqual(config.limits, { turns: 200, durationMinutes: 43 });
 });
 
 test('config resolves relative and absolute directories', async () => {

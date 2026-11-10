@@ -51,7 +51,9 @@ Then check that everything is in place:
 bbx doctor
 ```
 
-This repo's committed `bbx.config.json` uses the in-repo `SYSTEM_PROMPT.md` and writes artifacts and logs to a sibling directory, `../brainbox-output/artifacts` and `../brainbox-output/logs`, which `bbx` creates on the first run. Point `artifactsDir` and `logsDir` at `./artifacts` and `./logs` if you would rather keep output inside this checkout. `bbx doctor` will tell you if the prompt file is missing.
+This repo's committed `bbx.config.json` uses the in-repo `SYSTEM_PROMPT.md` and writes artifacts and logs to `./artifacts` and `./logs` inside this checkout. Both folders are git-ignored. `bbx doctor` will tell you if the prompt file is missing.
+
+To keep output somewhere else, such as a separate repository, copy the config to `bbx.config.local.json` (git-ignored), change `artifactsDir` and `logsDir`, and pass `--config bbx.config.local.json` on each command.
 
 ### Write a task
 
@@ -108,17 +110,17 @@ Each run gets an ID like `2026-08-16-x-ai-grok-4.6-ea756923` (UTC date, a filesy
 
 ```text
 artifacts/<run-id>/                   The deliverables
-logs/<run-id>/events.jsonl           Append-only event stream for the whole run
+logs/<run-id>/events.log             Append-only event stream for the whole run
 logs/<run-id>/transcript.txt         Human-readable progress (same shape as the live terminal, full text)
 logs/<run-id>/result.json            Final status and summary
 logs/<run-id>/artifact-manifest.json Sizes and SHA-256 hashes
 ```
 
-`events.jsonl` is an append-only stream of pretty-printed JSON records separated by blank lines. Command output is stored in full (very large output may still be shortened before it is returned to the model, to protect the context window). The log keeps plaintext reasoning summaries the provider exposes and replaces encrypted reasoning traces with a placeholder; providers do not expose private hidden chain-of-thought.
+`events.log` is an append-only stream of pretty-printed JSON records separated by blank lines, which keeps it easy to read but means it is not JSON Lines. Runs made before November 2026 named this file `events.jsonl`; the content format is the same. Command output is stored in full (very large output may still be shortened before it is returned to the model, to protect the context window). The log keeps plaintext reasoning summaries the provider exposes and replaces encrypted reasoning traces with a placeholder; providers do not expose private hidden chain-of-thought.
 
 `transcript.txt` mirrors the live terminal progress (run header, thinking, tool calls/results, phases). Reasoning and tool-call details are written in full instead of the short previews shown on screen.
 
-If a run fails or hits a limit, `bbx` still tries to salvage whatever is already in the sandbox artifact directory into `artifacts/<run-id>.partial`.
+If a run fails or hits a limit, `bbx` still tries to salvage whatever is already in the sandbox artifact directory into `artifacts/<run-id>.partial`. When there is nothing to salvage, no folder and no manifest are written.
 
 ## Configuration
 
@@ -132,7 +134,7 @@ If a run fails or hits a limit, `bbx` still tries to salvage whatever is already
   "systemPromptFile": "./SYSTEM_PROMPT.md",
   "limits": {
     "turns": 200,
-    "durationMinutes": 60
+    "durationMinutes": 43
   }
 }
 ```
@@ -147,7 +149,7 @@ If a run fails or hits a limit, `bbx` still tries to salvage whatever is already
 | `limits.durationMinutes`   | Wall-clock budget for the run                                            |
 
 
-Every field is optional; the example above shows the built-in defaults. The sandbox is created with a lifetime of `limits.durationMinutes` plus two minutes for downloading artifacts. Vercel's Hobby plan caps a sandbox at 45 minutes, so on Hobby keep `durationMinutes` at 43 or lower (the committed config does), or sandbox creation fails before the run starts.
+Every field is optional; the example above shows the built-in defaults. The sandbox is created with a lifetime of `limits.durationMinutes` plus two minutes for downloading artifacts. Vercel's Hobby plan caps a sandbox at 45 minutes, which is why the default is 43. Raise `durationMinutes` only on a plan that allows longer sandboxes, or sandbox creation fails before the run starts.
 
 `bbx` loads `.env.local` (falling back to `.env`) from the directory that contains the config file, not from your current working directory.
 
@@ -162,7 +164,7 @@ The agent is a simple tool loop:
 1. `bbx` creates a disposable Linux sandbox and an artifacts directory inside it.
 2. It sends the system prompt and your task to the model, along with a small set of tools.
 3. The model thinks, calls a tool, gets the result, and repeats.
-4. When the work is genuinely done, the agent calls `finish_task` with a short summary and the files (or directories) to download.
+4. When the work is genuinely done, the agent calls `finish_task` with a short summary and the files (or directories) to download. A call that declares no artifact, or one that does not exist, is rejected and the agent keeps working.
 5. `bbx` copies those files to your machine, writes the log, and permanently deletes the sandbox.
 
 If the model stops with an ordinary text reply instead of `finish_task`, `bbx` asks it to keep going. The loop ends when `finish_task` is accepted, or when the turn or time limit is reached.
@@ -186,7 +188,7 @@ The agent gets a short list of tools. Together they are enough to operate the co
 - `write_files` - Write one or more files.
 - `list_files` - Inspect a directory tree (type and size).
 - `view_image` - Look at an image in the sandbox when the selected model supports vision. Images are re-encoded as JPEG under a ~100KB budget (and downscaled if needed). Only the latest screenshot stays in the model context; earlier ones become short text stubs.
-- `finish_task` - End the run with a summary and the artifact files or directories to download.
+- `finish_task` - End the run with a summary and at least one artifact file or directory to download.
 
 The sandbox has network access, so the agent can install packages and fetch whatever it needs to do the job.
 

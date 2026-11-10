@@ -3,6 +3,12 @@ import { readFile, realpath } from 'node:fs/promises';
 import path from 'node:path';
 import { z } from 'zod';
 
+/**
+ * Vercel's Hobby plan caps a sandbox at 45 minutes, and a run adds a two-minute
+ * margin for downloading artifacts, so 43 is the longest budget that works everywhere.
+ */
+const DEFAULT_DURATION_MINUTES = 43;
+
 const configSchema = z
   .object({
     tasksDir: z.string().default('./tasks'),
@@ -12,9 +18,9 @@ const configSchema = z
     limits: z
       .object({
         turns: z.number().int().positive().max(1000).default(200),
-        durationMinutes: z.number().positive().max(24 * 60).default(60),
+        durationMinutes: z.number().positive().max(24 * 60).default(DEFAULT_DURATION_MINUTES),
       })
-      .default({ turns: 200, durationMinutes: 60 }),
+      .default({ turns: 200, durationMinutes: DEFAULT_DURATION_MINUTES }),
   })
   .strict();
 

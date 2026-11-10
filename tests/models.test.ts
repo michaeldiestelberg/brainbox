@@ -78,20 +78,9 @@ test('reads and summarizes reasoning options', () => {
   assert.equal(
     formatReasoningSummary({
       ...runnable,
-      reasoning_options: [
-        { type: 'toggle' },
-        { type: 'budget_tokens', min: 1024, max: 32_768 },
-        { type: 'effort', values: ['minimal', 'high'] },
-      ],
+      reasoning_options: [{ type: 'effort', values: ['minimal', 'high'] }],
     }),
-    'minimal, high · toggle · budget 1024–32768',
-  );
-  assert.equal(
-    formatReasoningSummary({
-      ...runnable,
-      reasoning_options: [{ type: 'budget_tokens', min: 128 }],
-    }),
-    'budget ≥128',
+    'minimal, high',
   );
   assert.equal(
     formatReasoningSummary({ ...runnable, tags: ['reasoning'], reasoning_options: null }),
