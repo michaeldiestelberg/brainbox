@@ -86,6 +86,31 @@ export function nextInputTokensAfter(usage: unknown): number | undefined {
   return inputTokens + output;
 }
 
+/** Stand-in size of an image or file part, whose base64 length says nothing about its tokens. */
+const FILE_PART_TOKENS = 2000;
+
+function contentTokens(value: unknown): number {
+  if (typeof value === 'string') return Math.ceil(value.length / 3);
+  if (Array.isArray(value)) return value.reduce<number>((sum, item) => sum + contentTokens(item), 0);
+  if (!value || typeof value !== 'object') return 0;
+  const record = value as Record<string, unknown>;
+  if (record.type === 'file' || record.type === 'image') return FILE_PART_TOKENS;
+  return Object.values(record).reduce<number>((sum, item) => sum + contentTokens(item), 0);
+}
+
+/**
+ * Rough size of the messages that follow the last assistant message: the tool
+ * results (or user message) the next request sends that no usage report has
+ * counted yet. A tool result can be tens of thousands of tokens, so leaving it
+ * out would let a step ask for more output than the limit can pay for.
+ */
+export function estimateAppendedTokens(messages: ReadonlyArray<{ role: string; content: unknown }>): number {
+  const lastAssistant = messages.findLastIndex(message => message.role === 'assistant');
+  return messages
+    .slice(lastAssistant + 1)
+    .reduce((sum, message) => sum + contentTokens(message.content), 0);
+}
+
 /**
  * Reason a run must not start, given what the key has left and the run's cost limit.
  * Undefined when the run may start. `keyRemainingUsd` is null for a key without a

@@ -7,6 +7,7 @@ import type { BbxConfig } from './config.js';
 import { errorMessage, readSystemPrompt, resolveTaskFile } from './config.js';
 import { ArtifactDownloadError, downloadArtifacts, type ArtifactManifest } from './artifacts.js';
 import {
+  estimateAppendedTokens,
   estimateFirstInputTokens,
   nextInputTokensAfter,
   startBlocker,
@@ -381,7 +382,10 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
               const stepNumber = turns + completedSteps;
               completedSteps += 1;
               cost += usageCost(event.usage);
-              nextInputTokens = nextInputTokensAfter(event.usage) ?? nextInputTokens;
+              // What this step read and wrote, plus the tool results it produced, which
+              // the next request sends but no usage report has counted yet.
+              nextInputTokens = (nextInputTokensAfter(event.usage) ?? nextInputTokens)
+                + estimateAppendedTokens(event.response.messages as ModelMessage[]);
               await applyReasoningWarnings(event.warnings, 'agent.step.end');
               await logger.event('agent.step.end', {
                 stepNumber,

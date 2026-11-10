@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   affordableOutputTokens,
+  estimateAppendedTokens,
   estimateFirstInputTokens,
   MIN_STEP_OUTPUT_TOKENS,
   nextInputTokensAfter,
@@ -88,6 +89,55 @@ test('the next input is what the last step read plus what it wrote', () => {
   assert.equal(nextInputTokensAfter({ outputTokens: 10 }), undefined);
   assert.equal(nextInputTokensAfter(undefined), undefined);
   assert.equal(estimateFirstInputTokens('a'.repeat(300), 'b'.repeat(300)), 2_200);
+});
+
+test('tool results after the last assistant message count toward the next input', () => {
+  const messages = [
+    { role: 'user', content: 'x'.repeat(9_000) },
+    { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'a', toolName: 'run_command', input: {} }] },
+    {
+      role: 'tool',
+      content: [{
+        type: 'tool-result',
+        toolCallId: 'a',
+        toolName: 'run_command',
+        output: { type: 'json', value: { stdout: { text: 'y'.repeat(48_000) }, exitCode: 0 } },
+      }],
+    },
+  ];
+  // Only the tool message counts: 48,000 characters of output is 16,000 tokens, plus its small labels.
+  const appended = estimateAppendedTokens(messages);
+  assert.ok(appended >= 16_000 && appended < 16_100, String(appended));
+  // With $0.50 left, 11,000 known input tokens alone would allow 10,300 output tokens, and the
+  // uncounted tool result would push that request past the limit. Counting it keeps the request inside.
+  const tight = { limitUsd: 5, spentUsd: 4.5, pricing, modelMaxOutputTokens: 128_000 };
+  assert.deepEqual(stepAllowance({ ...tight, nextInputTokens: 11_000 }), { proceed: true, maxOutputTokens: 10_300 });
+  const nextInputTokens = 11_000 + appended;
+  const sized = stepAllowance({ ...tight, nextInputTokens });
+  assert.ok(sized.proceed && sized.maxOutputTokens !== undefined && sized.maxOutputTokens < 10_300);
+  const worstCaseUsd = nextInputTokens * pricing.prompt + sized.maxOutputTokens * pricing.completion;
+  assert.ok(worstCaseUsd <= 0.5, String(worstCaseUsd));
+});
+
+test('an image result counts as a fixed size, not by its base64 length', () => {
+  const image = {
+    role: 'tool',
+    content: [{
+      type: 'tool-result',
+      toolCallId: 'b',
+      toolName: 'view_image',
+      output: {
+        type: 'content',
+        value: [
+          { type: 'text', text: 'abc' },
+          { type: 'file', mediaType: 'image/jpeg', data: { type: 'data', data: 'A'.repeat(130_000) } },
+        ],
+      },
+    }],
+  };
+  const appended = estimateAppendedTokens([{ role: 'assistant', content: 'look' }, image]);
+  assert.ok(appended >= 2_000 && appended < 2_100, String(appended));
+  assert.equal(estimateAppendedTokens([{ role: 'assistant', content: 'done' }]), 0);
 });
 
 test('a run is refused when the key has less left than it may spend', () => {
