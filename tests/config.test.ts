@@ -28,6 +28,16 @@ test('config resolves relative and absolute directories', async () => {
   assert.deepEqual(config.limits, { turns: 7, durationMinutes: 2 });
 });
 
+test('config accepts an optional positive cost limit', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'bbx-cost-'));
+  const configFile = path.join(root, 'bbx.config.json');
+  await writeFile(configFile, JSON.stringify({ limits: { costUsd: 5 } }));
+  assert.deepEqual((await loadConfig(root)).limits, { turns: 200, durationMinutes: 43, costUsd: 5 });
+
+  await writeFile(configFile, JSON.stringify({ limits: { costUsd: 0 } }));
+  await assert.rejects(() => loadConfig(root), /Invalid config/);
+});
+
 test('task lookup accepts nested txt tasks and rejects traversal', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'bbx-task-'));
   const tasks = path.join(root, 'tasks');

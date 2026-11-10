@@ -19,6 +19,7 @@ const configSchema = z
       .object({
         turns: z.number().int().positive().max(1000).default(200),
         durationMinutes: z.number().positive().max(24 * 60).default(DEFAULT_DURATION_MINUTES),
+        costUsd: z.number().positive().max(10_000).optional(),
       })
       .default({ turns: 200, durationMinutes: DEFAULT_DURATION_MINUTES }),
   })
@@ -34,6 +35,8 @@ export type BbxConfig = {
   limits: {
     turns: number;
     durationMinutes: number;
+    /** Most a run may spend on model usage, in USD. Unset means no cost limit. */
+    costUsd?: number | undefined;
   };
 };
 

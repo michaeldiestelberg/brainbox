@@ -147,9 +147,10 @@ If a run fails or hits a limit, `bbx` still tries to salvage whatever is already
 | `systemPromptFile`         | Instructions given to the agent. Edit the file; the next run picks it up |
 | `limits.turns`             | Maximum agent steps in a run                                             |
 | `limits.durationMinutes`   | Wall-clock budget for the run                                            |
+| `limits.costUsd`           | Most a run may spend on model usage, in USD. Not set by default          |
 
 
-Every field is optional; the example above shows the built-in defaults. The sandbox is created with a lifetime of `limits.durationMinutes` plus two minutes for downloading artifacts. Vercel's Hobby plan caps a sandbox at 45 minutes, which is why the default is 43. Raise `durationMinutes` only on a plan that allows longer sandboxes, or sandbox creation fails before the run starts.
+Every field is optional; the example above shows the built-in defaults. `limits.costUsd` has none: add it, for example `"costUsd": 5`, to give runs a cost limit (see [What a run costs](#what-a-run-costs)). The sandbox is created with a lifetime of `limits.durationMinutes` plus two minutes for downloading artifacts. Vercel's Hobby plan caps a sandbox at 45 minutes, which is why the default is 43. Raise `durationMinutes` only on a plan that allows longer sandboxes, or sandbox creation fails before the run starts.
 
 `bbx` loads `.env.local` (falling back to `.env`) from the directory that contains the config file, not from your current working directory.
 
@@ -167,7 +168,7 @@ The agent is a simple tool loop:
 4. When the work is genuinely done, the agent calls `finish_task` with a short summary and the files (or directories) to download. A call that declares no artifact, or one that does not exist, is rejected and the agent keeps working.
 5. `bbx` copies those files to your machine, writes the log, and permanently deletes the sandbox.
 
-If the model stops with an ordinary text reply instead of `finish_task`, `bbx` asks it to keep going. The loop ends when `finish_task` is accepted, or when the turn or time limit is reached.
+If the model stops with an ordinary text reply instead of `finish_task`, `bbx` asks it to keep going. The loop ends when `finish_task` is accepted, or when the turn, time, or cost limit is reached.
 
 Deliverables have to live under `/vercel/sandbox/artifacts`. Everything else in the sandbox is temporary.
 
@@ -191,6 +192,22 @@ The agent gets a short list of tools. Together they are enough to operate the co
 - `finish_task` - End the run with a summary and at least one artifact file or directory to download.
 
 The sandbox has network access, so the agent can install packages and fetch whatever it needs to do the job.
+
+### What a run costs
+
+Every step of the loop sends the whole conversation again, so input tokens are billed many times over. Most providers soften that by caching the repeated part on their own. Anthropic only caches when asked, so `bbx` asks: for `anthropic/*` models it sets `cache_control` on each request, and repeated context is billed at the cheaper cache-read rate. Nothing about the run changes for the model.
+
+Each step's token counts, cached tokens, and cost are in `events.log` (`agent.step.end`), and the total is `cost` in `result.json`.
+
+#### Cost limit
+
+Set `limits.costUsd` to cap what a single run may spend. The model is not told about it. `bbx` does three things with the number:
+
+- **It sizes each request.** A request normally asks for the model's full output allowance (`max_tokens`). OpenRouter holds the cost of the input plus that full allowance for as long as the request runs, which for an expensive model can be several dollars per request, and it rejects a request whose hold does not fit the account. With a cost limit, each request asks for the smaller of the model's maximum and what the limit can still pay for, so the hold shrinks as the run spends.
+- **It stops the run** before a step the limit can no longer cover. The run ends with status `cost_limit`, and whatever is in the sandbox artifact directory is salvaged as usual. `bbx` sets aside the next step's input at the full input price, so a run can stop a little under the limit.
+- **It checks the key before starting.** If your OpenRouter key has its own limit and less left than `limits.costUsd`, the run is refused before a sandbox is created. A key without a limit cannot be checked: OpenRouter does not show an ordinary key the account balance.
+
+Two things to know. Runs in parallel each hold credit at the same time, so the account needs headroom for all of them. And some models take their thinking budget as a share of `max_tokens`; for those, a smaller request late in a run also means a smaller thinking budget.
 
 ## Development
 
