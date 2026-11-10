@@ -6,6 +6,13 @@ import { ToolLoopAgent, isStepCount, type ModelMessage } from 'ai';
 import type { BbxConfig } from './config.js';
 import { errorMessage, readSystemPrompt, resolveTaskFile } from './config.js';
 import { ArtifactDownloadError, downloadArtifacts, type ArtifactManifest } from './artifacts.js';
+import {
+  estimateFirstInputTokens,
+  nextInputTokensAfter,
+  startBlocker,
+  stepAllowance,
+  type StepAllowance,
+} from './budget.js';
 import { EVENTS_FILENAME, RunLogger } from './log.js';
 import { StreamEventLogger } from './stream-log.js';
 import { TerminalReporter } from './terminal.js';
@@ -18,7 +25,12 @@ import {
   reasoningLevelFromWarnings,
   type ReasoningEffort,
 } from './models.js';
-import { createBbxOpenRouter, promptCachingSettings } from './openrouter.js';
+import {
+  createBbxOpenRouter,
+  fetchOpenRouterKeyInfo,
+  promptCachingSettings,
+  requireOpenRouterApiKey,
+} from './openrouter.js';
 import {
   errorFromProviderStreamPart,
   isRetryableProviderError,
@@ -32,6 +44,7 @@ export type RunStatus =
   | 'completed'
   | 'turn_limit'
   | 'time_limit'
+  | 'cost_limit'
   | 'agent_error'
   | 'artifact_download_error'
   | 'interrupted';
@@ -256,6 +269,23 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
       promptCaching: promptCaching.cache_control ? 'requested' : 'provider default',
     });
 
+    // Refuse a run the key cannot pay for before a sandbox exists. Only a key with its own
+    // limit reports what it has left; the account balance is not visible to an ordinary key.
+    const costLimitUsd = options.config.limits.costUsd;
+    let keyRemainingUsd: number | null = null;
+    try {
+      ({ limitRemaining: keyRemainingUsd } = await fetchOpenRouterKeyInfo(
+        requireOpenRouterApiKey(),
+        AbortSignal.any([workSignal, AbortSignal.timeout(15_000)]),
+      ));
+    } catch (error) {
+      // The check is a convenience: a key that really is unusable fails on the first request.
+      await logger.event('credit.check.error', { error });
+    }
+    await logger.event('credit.checked', { keyRemainingUsd, costLimitUsd: costLimitUsd ?? null });
+    const blocker = startBlocker(keyRemainingUsd, costLimitUsd);
+    if (blocker) throw new Error(blocker);
+
     const sandboxName = createSandboxName(runId);
     sandbox = await Sandbox.create({
       name: sandboxName,
@@ -280,7 +310,30 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     const tools = createSandboxTools({ sandbox, logger, signal: workSignal, model, finish });
     let messages: ModelMessage[] = [{ role: 'user', content: task.prompt }];
 
-    while (!finish.accepted && turns < options.config.limits.turns && !workSignal.aborted) {
+    // With a cost limit, each step asks for no more output than the limit can still pay for,
+    // and the run stops once it cannot cover another step.
+    let nextInputTokens = estimateFirstInputTokens(systemPrompt, task.prompt);
+    let costLimitReached = false;
+    /** `max_tokens` of the step in flight, for the log. */
+    let stepMaxOutputTokens: number | undefined = maxOutputTokens;
+    const nextStep = (): StepAllowance => {
+      const allowance = stepAllowance({
+        limitUsd: costLimitUsd,
+        spentUsd: cost,
+        nextInputTokens,
+        pricing: model.pricing,
+        modelMaxOutputTokens: maxOutputTokens,
+      });
+      if (!allowance.proceed) costLimitReached = true;
+      return allowance;
+    };
+
+    while (
+      !finish.accepted
+      && turns < options.config.limits.turns
+      && !workSignal.aborted
+      && nextStep().proceed
+    ) {
       const invocationMessages = [...messages];
       const completedMessages: ModelMessage[] = [];
       let completedSteps = 0;
@@ -295,10 +348,21 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
             tools,
             reasoning: requestedReasoning,
             ...(maxOutputTokens === undefined ? {} : { maxOutputTokens }),
-            stopWhen: [({ steps }) => finish.accepted && steps.length > 0, isStepCount(remainingTurns)],
-            prepareStep: ({ messages: stepMessages }) => ({
-              messages: evictStaleViewImages(stepMessages),
-            }),
+            stopWhen: [
+              ({ steps }) => finish.accepted && steps.length > 0,
+              isStepCount(remainingTurns),
+              () => !nextStep().proceed,
+            ],
+            prepareStep: ({ messages: stepMessages }) => {
+              const allowance = nextStep();
+              // stopWhen ends the loop before a step the limit cannot cover, so a refusal
+              // here is not expected; the step then goes out with the model maximum.
+              stepMaxOutputTokens = allowance.proceed ? allowance.maxOutputTokens : maxOutputTokens;
+              return {
+                messages: evictStaleViewImages(stepMessages),
+                ...(stepMaxOutputTokens === undefined ? {} : { maxOutputTokens: stepMaxOutputTokens }),
+              };
+            },
             providerOptions: {
               openrouter: { user: runId },
             },
@@ -317,10 +381,12 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
               const stepNumber = turns + completedSteps;
               completedSteps += 1;
               cost += usageCost(event.usage);
+              nextInputTokens = nextInputTokensAfter(event.usage) ?? nextInputTokens;
               await applyReasoningWarnings(event.warnings, 'agent.step.end');
               await logger.event('agent.step.end', {
                 stepNumber,
                 finishReason: event.finishReason,
+                maxOutputTokens: stepMaxOutputTokens ?? null,
                 usage: event.usage,
                 performance: event.performance,
                 warnings: event.warnings,
@@ -378,7 +444,12 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
         cost,
       });
 
-      if (!finish.accepted && turns < options.config.limits.turns && !workSignal.aborted) {
+      if (
+        !finish.accepted
+        && turns < options.config.limits.turns
+        && !workSignal.aborted
+        && nextStep().proceed
+      ) {
         messages.push({
           role: 'user',
           content: 'Continue working. Do not stop with a normal response; call finish_task only when the task and artifacts are complete.',
@@ -390,7 +461,13 @@ export async function runTask(options: RunOptions): Promise<RunResult> {
     if (finish.accepted) status = 'completed';
     else if (interrupted) status = 'interrupted';
     else if (workSignal.aborted || Date.now() >= deadline) status = 'time_limit';
+    else if (costLimitReached) status = 'cost_limit';
     else status = 'turn_limit';
+
+    if (status === 'cost_limit') {
+      await logger.event('cost.limit.reached', { costLimitUsd, cost, turns });
+      terminal.phase(`Cost limit reached ($${cost.toFixed(2)} of $${costLimitUsd?.toFixed(2)} spent)`);
+    }
 
     try {
       terminal.phase('Downloading artifacts…');

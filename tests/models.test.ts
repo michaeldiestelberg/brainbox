@@ -181,10 +181,34 @@ test('maps OpenRouter catalog fields onto BrainBox model metadata', () => {
     tags: ['tool-use', 'reasoning', 'vision', 'structured-output'],
     modalities: { input: ['text', 'image', 'video'], output: ['text'] },
     reasoning_options: [{ type: 'effort', values: ['xhigh', 'medium', 'low'] }],
+    pricing: null,
   });
   assert.equal(findRunnableModel([mapped], mapped.id), mapped);
   assert.equal(getMaxOutputTokens(mapped), 131_072);
   assert.equal(formatReasoningSummary(mapped), 'xhigh, medium, low');
+});
+
+test('reads token prices from the catalog as USD per token', () => {
+  const priced = toCatalogModel({
+    ...qwenOpenRouter,
+    pricing: { prompt: '0.000008', completion: '0.00004', request: '0' },
+  });
+  assert.deepEqual(priced.pricing, { prompt: 0.000008, completion: 0.00004 });
+
+  assert.deepEqual(
+    toCatalogModel({ ...qwenOpenRouter, pricing: { prompt: '0', completion: '0' } }).pricing,
+    { prompt: 0, completion: 0 },
+  );
+  // A price that is missing, unreadable, or negative leaves the model unpriced.
+  assert.equal(toCatalogModel({ ...qwenOpenRouter, pricing: { prompt: '0.000008' } }).pricing, null);
+  assert.equal(
+    toCatalogModel({ ...qwenOpenRouter, pricing: { prompt: 'n/a', completion: '0.00004' } }).pricing,
+    null,
+  );
+  assert.equal(
+    toCatalogModel({ ...qwenOpenRouter, pricing: { prompt: '-1', completion: '0.00004' } }).pricing,
+    null,
+  );
 });
 
 test('maps non-text OpenRouter models and models without tools', () => {

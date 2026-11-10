@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { promptCachingSettings, requireOpenRouterApiKey, validateOpenRouterKey } from '../src/openrouter.js';
+import {
+  fetchOpenRouterKeyInfo,
+  promptCachingSettings,
+  requireOpenRouterApiKey,
+  validateOpenRouterKey,
+} from '../src/openrouter.js';
 
 test('requireOpenRouterApiKey reads a trimmed key and fails when unset', () => {
   const previous = process.env.OPENROUTER_API_KEY;
@@ -36,6 +41,23 @@ test('validateOpenRouterKey reports remaining credits and HTTP failures', async 
   globalThis.fetch = (async () => new Response('nope', { status: 401 })) as typeof fetch;
   try {
     await assert.rejects(() => validateOpenRouterKey('bad'), /OpenRouter key check returned HTTP 401/);
+  } finally {
+    globalThis.fetch = original;
+  }
+});
+
+test('fetchOpenRouterKeyInfo reports what a limited key has left and null for an unlimited one', async () => {
+  const original = globalThis.fetch;
+  const respond = (data: unknown) => {
+    globalThis.fetch = (async () => new Response(JSON.stringify({ data }), { status: 200 })) as typeof fetch;
+  };
+  try {
+    respond({ label: 'sk-or-v1-…', limit: 20, limit_remaining: 4.63 });
+    assert.deepEqual(await fetchOpenRouterKeyInfo('sk-or-test'), { label: 'sk-or-v1-…', limitRemaining: 4.63 });
+    respond({ label: 'sk-or-v1-…', limit: null, limit_remaining: null });
+    assert.deepEqual(await fetchOpenRouterKeyInfo('sk-or-test'), { label: 'sk-or-v1-…', limitRemaining: null });
+    respond({});
+    assert.deepEqual(await fetchOpenRouterKeyInfo('sk-or-test'), { limitRemaining: null });
   } finally {
     globalThis.fetch = original;
   }

@@ -22,6 +22,8 @@ const catalogModelSchema = z
       })
       .nullish(),
     reasoning_options: z.array(reasoningOptionSchema).nullish(),
+    /** USD per token. Null when the catalog has no usable price for the model. */
+    pricing: z.object({ prompt: z.number(), completion: z.number() }).nullish(),
   })
   .passthrough();
 
@@ -54,12 +56,21 @@ const openRouterModelSchema = z
       .nullish(),
     supported_parameters: z.array(z.string()).nullish(),
     reasoning: openRouterReasoningSchema.nullish(),
+    pricing: z
+      .object({
+        prompt: z.union([z.string(), z.number()]).nullish(),
+        completion: z.union([z.string(), z.number()]).nullish(),
+      })
+      .passthrough()
+      .nullish(),
   })
   .passthrough();
 
 const openRouterCatalogSchema = z.object({ data: z.array(openRouterModelSchema) }).passthrough();
 
 export type CatalogModel = z.infer<typeof catalogModelSchema>;
+/** USD per token, the unit OpenRouter's catalog uses. */
+export type TokenPricing = { prompt: number; completion: number };
 export type OpenRouterModel = z.infer<typeof openRouterModelSchema>;
 export const REASONING_EFFORTS = [
   'provider-default',
@@ -120,6 +131,19 @@ function catalogReasoningOptions(
   return [{ type: 'effort', values: reasoning.supported_efforts }];
 }
 
+function priceNumber(value: string | number | null | undefined): number | undefined {
+  if (value == null || value === '') return undefined;
+  const price = Number(value);
+  return Number.isFinite(price) && price >= 0 ? price : undefined;
+}
+
+/** Token prices from the catalog, or null when either one is missing or unreadable. */
+function catalogPricing(pricing: OpenRouterModel['pricing']): TokenPricing | null {
+  const prompt = priceNumber(pricing?.prompt);
+  const completion = priceNumber(pricing?.completion);
+  return prompt === undefined || completion === undefined ? null : { prompt, completion };
+}
+
 export function toCatalogModel(raw: OpenRouterModel): CatalogModel {
   const input = raw.architecture?.input_modalities ?? [];
   const output = raw.architecture?.output_modalities ?? [];
@@ -131,6 +155,7 @@ export function toCatalogModel(raw: OpenRouterModel): CatalogModel {
     tags: catalogTags(input, raw.supported_parameters ?? [], raw.reasoning),
     modalities: { input, output },
     reasoning_options: catalogReasoningOptions(raw.reasoning),
+    pricing: catalogPricing(raw.pricing),
   });
 }
 

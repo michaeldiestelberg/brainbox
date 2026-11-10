@@ -48,7 +48,13 @@ export function promptCachingSettings(modelId: string): { cache_control?: { type
   return modelId.startsWith('anthropic/') ? { cache_control: { type: 'ephemeral' } } : {};
 }
 
-export async function validateOpenRouterKey(apiKey: string, signal?: AbortSignal): Promise<string> {
+export type OpenRouterKeyInfo = {
+  label?: string;
+  /** USD left under the key's own limit, or null when the key has no limit. */
+  limitRemaining: number | null;
+};
+
+export async function fetchOpenRouterKeyInfo(apiKey: string, signal?: AbortSignal): Promise<OpenRouterKeyInfo> {
   const response = await fetch(`${OPENROUTER_API_BASE}/key`, {
     headers: { Authorization: `Bearer ${apiKey}` },
     ...(signal ? { signal } : {}),
@@ -56,8 +62,15 @@ export async function validateOpenRouterKey(apiKey: string, signal?: AbortSignal
   if (!response.ok) {
     throw new Error(`OpenRouter key check returned HTTP ${response.status}.`);
   }
-  const parsed = keyInfoSchema.parse(await response.json());
-  const remaining = parsed.data.limit_remaining;
-  if (remaining == null) return 'OPENROUTER_API_KEY is valid';
-  return `OPENROUTER_API_KEY is valid (${remaining} credits remaining)`;
+  const { data } = keyInfoSchema.parse(await response.json());
+  return {
+    ...(data.label === undefined ? {} : { label: data.label }),
+    limitRemaining: data.limit_remaining ?? null,
+  };
+}
+
+export async function validateOpenRouterKey(apiKey: string, signal?: AbortSignal): Promise<string> {
+  const { limitRemaining } = await fetchOpenRouterKeyInfo(apiKey, signal);
+  if (limitRemaining == null) return 'OPENROUTER_API_KEY is valid';
+  return `OPENROUTER_API_KEY is valid (${limitRemaining} credits remaining)`;
 }
